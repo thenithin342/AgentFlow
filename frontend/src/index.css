@@ -1,0 +1,425 @@
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500&display=swap');
+
+:root {
+  --af-bg-app: #14161a;
+  --af-bg-panel: #191c22;
+  --af-bg-surface: #21252d;
+  --af-border: #262a33;
+  --af-text-primary: #ece9e2;
+  --af-text-muted: #8b9099; /* WCAG AA: 4.6:1 contrast ratio. Disabled state opacity exemption applies. */
+  --af-text-body: #dedcd5;
+
+  --af-router: #8b8f98;
+  --af-research: #4fc3b8;
+  --af-analysis: #6fa3d6;
+  --af-chat: #9aa0ac;
+  --af-synthesizer: #ff6b57;
+  --af-review: #e3b356;
+  --af-review-bg: #1e1b14;
+  --af-review-border: #453a22;
+  --af-error: #ff6b57;
+  --af-error-bg: rgba(255, 107, 87, 0.06);
+  --af-status-error: #ff4a4a;
+  --af-focus: #6fa3d6;
+
+  --af-font-mono: 'IBM Plex Mono', ui-monospace, monospace;
+  --af-font-sans: 'IBM Plex Sans', system-ui, sans-serif;
+}
+
+[data-theme="light"] {
+  --af-bg-app: #f4f6fa;
+  --af-bg-panel: #ffffff;
+  --af-bg-surface: #e9ecf2;
+  --af-border: #d8dce6;
+  --af-text-primary: #191c22;
+  --af-text-muted: #6b7280;
+  --af-text-body: #374151;
+
+  --af-router: #737885;
+  --af-research: #2a9b8f;
+  --af-analysis: #467cb5;
+  --af-chat: #565d6c;
+  --af-synthesizer: #e04a37;
+  --af-review: #b58021;
+  --af-review-bg: #fffbf2;
+  --af-review-border: #f0deba;
+  --af-error: #e04a37;
+  --af-error-bg: rgba(224, 74, 55, 0.08);
+  --af-status-error: #e63939;
+  --af-focus: #467cb5;
+}
+
+html {
+  color-scheme: dark;
+}
+html[data-theme="light"] {
+  color-scheme: light;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--af-bg-app);
+  font-family: var(--af-font-sans);
+  color: var(--af-text-primary);
+}
+
+@keyframes af-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+
+.af-pulse {
+  animation: af-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes af-blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+
+.af-cursor {
+  display: inline-block;
+  width: 2px;
+  height: 1em;
+  background: currentColor;
+  margin-left: 2px;
+  vertical-align: text-bottom;
+  animation: af-blink 1s step-end infinite;
+}
+
+/* Source citation chips rendered below the agent body when
+   the final_response includes "Sources: [1] https://… [2] …". Color
+   tracks --af-research on hover for visual continuity with the
+   research-agent trace dot. */
+.af-source-chip {
+  font-family: var(--af-font-mono);
+  font-size: 10.5px;
+  color: var(--af-text-body);
+  background: var(--af-bg-surface);
+  border: 1px solid var(--af-border);
+  border-radius: 4px;
+  padding: 2px 7px;
+  text-decoration: none;
+  transition: border-color 0.15s, color 0.15s;
+}
+.af-source-chip:hover {
+  color: var(--af-research);
+  border-color: var(--af-research);
+}
+
+/* Welcome-state prompt chips shown when the conversation is empty. */
+.af-welcome-chip {
+  font-family: var(--af-font-mono);
+  font-size: 12px;
+  color: var(--af-text-body);
+  background: var(--af-bg-surface);
+  border: 1px solid var(--af-border);
+  border-radius: 6px;
+  padding: 8px 14px;
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s, background 0.15s;
+  text-align: center;
+  max-width: 360px;
+}
+.af-welcome-chip:hover {
+  color: var(--af-chat);
+  border-color: var(--af-chat);
+  background: var(--af-bg-panel);
+}
+
+/* Cross-browser scrollbar styling. */
+.af-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: #333844 transparent;
+}
+.af-scroll::-webkit-scrollbar {
+  width: 6px;
+}
+.af-scroll::-webkit-scrollbar-thumb {
+  background: #333844;
+  border-radius: 3px;
+}
+.af-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* Global focus ring. `:focus-visible` only fires for keyboard nav, so
+   mouse clicks on buttons don't show a ring but Tab-through always does. */
+*:focus-visible {
+  outline: 2px solid var(--af-focus);
+  outline-offset: 2px;
+  border-radius: 3px;
+}
+
+/* Reduced-motion: kill pulsing cursor + active-node pulse for users
+   who've opted out of animation. Text still updates; decorative blink stops. */
+@media (prefers-reduced-motion: reduce) {
+  .af-pulse,
+  .af-cursor {
+    animation: none;
+  }
+}
+
+/* Inline error panel rendered in place of the agent body when the stream
+   errors out. Replaces a 60-line inline style block in App.jsx. */
+.af-error-panel {
+  border: 1px solid var(--af-error);
+  background: var(--af-error-bg);
+  border-radius: 6px;
+  padding: 12px;
+}
+.af-error-panel-text {
+  color: var(--af-error);
+  margin-bottom: 8px;
+  font-size: 13.5px;
+  line-height: 1.5;
+}
+.af-error-panel-retry {
+  background: transparent;
+  border: 1px solid var(--af-error);
+  color: var(--af-error);
+  padding: 4px 12px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-family: var(--af-font-mono);
+  font-size: 11px;
+}
+
+.af-inline-edit-btn {
+  position: absolute;
+  top: -6px;
+  right: -10px;
+  background: var(--af-bg-app);
+  border: 1px solid var(--af-border);
+  border-radius: 4px;
+  padding: 2px 4px;
+  font-size: 10px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+.af-user-message:hover .af-inline-edit-btn {
+  opacity: 1;
+}
+.af-user-message:focus-within .af-inline-edit-btn,
+.af-inline-edit-btn:focus-visible {
+  opacity: 1;
+}
+.af-error-panel-retry:hover {
+  filter: brightness(1.08);
+}
+
+/* Aborted message — distinct from error so users can tell at a glance
+   that the stream was cancelled, not failed. */
+.af-aborted {
+  font-style: italic;
+  color: var(--af-text-muted);
+}
+
+/* Skip link — invisible until focused via Tab. */
+.af-skip-link {
+  position: absolute;
+  top: -40px;
+  left: 8px;
+  background: var(--af-bg-panel);
+  color: var(--af-text-primary);
+  padding: 6px 10px;
+  border-radius: 4px;
+  z-index: 100;
+  text-decoration: none;
+  font-family: var(--af-font-mono);
+  font-size: 12px;
+}
+.af-skip-link:focus {
+  top: 8px;
+}
+
+/* Trace rail: horizontal strip on narrow viewports */
+@media (max-width: 720px) {
+  .af-trace-rail {
+    width: 100%;
+    max-height: 72px;
+    flex-shrink: 0;
+    border-right: none;
+    border-bottom: 1px solid var(--af-border);
+    overflow-x: auto;
+    overflow-y: hidden;
+    display: flex;
+    flex-direction: row;
+    gap: 12px;
+    padding: 8px 12px;
+  }
+  .af-layout {
+    flex-direction: column;
+  }
+}
+
+.af-history-panel {
+  position: absolute;
+  top: 42px;
+  left: 0;
+  bottom: 0;
+  width: 260px;
+  background: var(--af-bg-panel);
+  border-right: 1px solid var(--af-border);
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 4px 0 12px rgba(0,0,0,0.2);
+}
+
+.af-history-item {
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--af-border);
+  cursor: pointer;
+  transition: background 0.15s;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.af-history-item:hover {
+  background: var(--af-bg-surface);
+}
+
+.af-history-item.active {
+  background: var(--af-bg-surface);
+  border-left: 2px solid var(--af-router);
+}
+
+@media (max-width: 768px) {
+  .af-history-panel {
+    width: 100%;
+    z-index: 100;
+  }
+}
+
+/* Message entrance animation */
+@keyframes af-slide-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.af-msg-enter {
+  animation: af-slide-in 0.22s ease-out both;
+}
+@media (prefers-reduced-motion: reduce) {
+  .af-msg-enter { animation: none; }
+}
+
+/* Code block header (language label + copy button row) */
+.af-code-block {
+  position: relative;
+  margin-bottom: 1em;
+  border-radius: 6px;
+  overflow: hidden;
+  border: 1px solid var(--af-border);
+}
+.af-code-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 4px 10px;
+  background: var(--af-bg-surface);
+  border-bottom: 1px solid var(--af-border);
+  font-family: var(--af-font-mono);
+  font-size: 10.5px;
+  color: var(--af-text-muted);
+}
+.af-code-block pre {
+  margin: 0;
+  padding: 12px;
+  overflow-x: auto;
+  background: var(--af-bg-panel);
+}
+
+/* Collapse/expand long messages */
+.af-msg-collapsed {
+  max-height: 240px;
+  overflow: hidden;
+  position: relative;
+}
+.af-msg-collapsed::after {
+  content: '';
+  position: absolute;
+  bottom: 0; left: 0; right: 0;
+  height: 60px;
+  background: linear-gradient(transparent, var(--af-bg-app));
+  pointer-events: none;
+}
+.af-msg-expand-btn {
+  display: block;
+  width: 100%;
+  margin-top: 6px;
+  background: transparent;
+  border: 1px solid var(--af-border);
+  border-radius: 4px;
+  color: var(--af-text-muted);
+  font-family: var(--af-font-mono);
+  font-size: 11px;
+  padding: 4px 0;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+}
+.af-msg-expand-btn:hover {
+  color: var(--af-text-primary);
+  border-color: var(--af-text-muted);
+}
+
+/* Word count badge on input */
+.af-word-count {
+  font-family: var(--af-font-mono);
+  font-size: 10px;
+  color: var(--af-text-muted);
+  padding: 0 8px;
+  align-self: flex-end;
+  padding-bottom: 6px;
+  user-select: none;
+}
+
+/* Phase 1 Enhancements */
+
+/* Typing Indicator */
+.af-typing-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  height: 20px;
+}
+.af-typing-indicator span {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.4;
+  animation: af-type 1.4s infinite both;
+}
+.af-typing-indicator span:nth-child(1) { animation-delay: -0.32s; }
+.af-typing-indicator span:nth-child(2) { animation-delay: -0.16s; }
+
+@keyframes af-type {
+  0%, 80%, 100% { transform: scale(0); opacity: 0.4; }
+  40% { transform: scale(1.5); opacity: 1; }
+}
+
+/* Hover Timestamps */
+.af-msg-timestamp {
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+.af-user-message:hover .af-msg-timestamp,
+.af-msg-enter:hover .af-msg-timestamp {
+  opacity: 1;
+}
+
+/* Trace Spinner */
+.af-trace-spinner {
+  display: inline-block;
+  animation: af-spin 1s linear infinite;
+  font-size: 10px;
+}
+@keyframes af-spin { 100% { transform: rotate(360deg); } }
+

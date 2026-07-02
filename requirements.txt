@@ -1,0 +1,32 @@
+# Orchestration — LangGraph 1.x APIs (interrupt, Command, AsyncSqliteSaver)
+langgraph>=1.0.0,<2.0.0
+langchain>=0.3.0
+langchain-core>=0.3.0
+langchain-community>=0.3.0
+
+# LLM providers
+langchain-groq>=0.2.0
+langchain-google-genai>=2.0.0
+
+# Tools
+langchain-tavily>=0.1.0
+
+# RAG
+faiss-cpu>=1.8.0
+langchain-huggingface>=0.1.0
+sentence-transformers>=3.0.0
+pypdf>=4.0.0
+
+# Persistence
+langgraph-checkpoint-sqlite>=2.0.0
+
+# Backend
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+python-multipart>=0.0.9
+aiosqlite>=0.20.0
+
+# Config / utils
+python-dotenv>=1.0.0
+
+# NOTE: test-only deps (pytest, pytest-asyncio) live in requirements-dev.txt.

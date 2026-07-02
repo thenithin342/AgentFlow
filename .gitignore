@@ -1,0 +1,23 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+*.db
+*.sqlite3
+faiss_index/
+faiss_indexes/
+node_modules/
+dist/
+.DS_Store
+*.log
+# SQLite WAL sidecars. WAL mode is required by langgraph-checkpoint-sqlite
+# (its AsyncSqliteSaver cannot open the DB without it), but the sidecar
+# files are runtime state, not source. Ignoring them prevents merge
+# conflicts and keeps a clean `git status` between sessions.
+*.db-shm
+*.db-wal
+# The main agentflow.db holds dev checkpoints and is per-machine. Ignore
+# the default path; the env var CHECKPOINT_DB_PATH can still point it
+# somewhere else if you do want to commit a known-good fixture DB.
+agentflow.db
