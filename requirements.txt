@@ -15,7 +15,7 @@ langchain-tavily>=0.1.0
 faiss-cpu>=1.8.0
 langchain-huggingface>=0.1.0
 sentence-transformers>=3.0.0
-pypdf>=4.0.0
+pypdf>=4.1.0
 
 # Persistence
 langgraph-checkpoint-sqlite>=2.0.0
@@ -23,7 +23,7 @@ langgraph-checkpoint-sqlite>=2.0.0
 # Backend
 fastapi>=0.115.0
 uvicorn[standard]>=0.30.0
-python-multipart>=0.0.9
+python-multipart>=0.0.18
 aiosqlite>=0.20.0
 
 # Config / utils

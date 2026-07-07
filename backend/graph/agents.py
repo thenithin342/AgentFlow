@@ -33,11 +33,20 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.prebuilt import create_react_agent
 
 from backend.graph.state import AgentState
-from backend.graph.messages import content_to_str
+from backend.graph.messages import (
+    content_to_str,
+    is_tool_message,
+    is_ai_message,
+    get_msg_content,
+)
 from backend.graph.tools import (
     calculator,
     make_retrieve_documents_tool,
     tavily_search,
+    wikipedia_search,
+    datetime_tool,
+    url_reader,
+    code_interpreter,
 )
 from backend.llm import llm_fast
 
@@ -56,8 +65,8 @@ def _extract_sources(messages) -> list[str]:
     """
     sources: list[str] = []
     for msg in messages:
-        if isinstance(msg, ToolMessage):
-            content = msg.content
+        if is_tool_message(msg):
+            content = get_msg_content(msg)
             if isinstance(content, str):
                 sources.extend(_URL_RE.findall(content))
             else:
@@ -68,7 +77,7 @@ def _extract_sources(messages) -> list[str]:
 # --- Thread ID helper ------------------------------------------------------
 
 
-def _thread_id_from_config(config: RunnableConfig | None) -> str:
+def _thread_id_from_config(config: RunnableConfig) -> str:
     """Extract thread_id from a LangGraph RunnableConfig.
 
     LangGraph 1.x injects the per-invoke config (containing
@@ -107,8 +116,10 @@ def _thread_id_from_config(config: RunnableConfig | None) -> str:
 # for thread A would be reused for thread B, silently binding the wrong
 # retriever. Caching per (tool names, llm, prompt, thread_id) still
 # avoids redundant `create_react_agent` calls within the same thread.
+import threading
 _AGENT_CACHE: OrderedDict = OrderedDict()
 _MAX_AGENT_CACHE = 128
+_AGENT_CACHE_LOCK = threading.Lock()
 
 
 def _get_cached_agent(
@@ -137,17 +148,22 @@ def _get_cached_agent(
         prompt_key,
         thread_id,
     )
-    cached = _AGENT_CACHE.get(key)
-    if cached is not None:
-        _AGENT_CACHE.move_to_end(key)
-        return cached
+    with _AGENT_CACHE_LOCK:
+        cached = _AGENT_CACHE.get(key)
+        if cached is not None:
+            _AGENT_CACHE.move_to_end(key)
+            return cached
+            
     if prompt:
         agent = create_react_agent(llm, tools, prompt=prompt)
     else:
         agent = create_react_agent(llm, tools)
-    while len(_AGENT_CACHE) >= _MAX_AGENT_CACHE:
-        _AGENT_CACHE.popitem(last=False)
-    _AGENT_CACHE[key] = agent
+        
+    with _AGENT_CACHE_LOCK:
+        while len(_AGENT_CACHE) >= _MAX_AGENT_CACHE:
+            _AGENT_CACHE.popitem(last=False)
+        _AGENT_CACHE[key] = agent
+        
     return agent
 
 
@@ -155,16 +171,25 @@ def _get_cached_agent(
 
 RESEARCH_AGENT_PROMPT = """\
 You are AgentFlow's Research Agent — a sharp, thorough investigator with access \
-to live web search and the user's uploaded documents.
+to live web search, Wikipedia, URL reading, and the user's uploaded documents.
 
 ## Strategy
 1. First check `retrieve_documents` to see if the user's uploaded files contain \
    relevant information. If they do, combine it with web results.
 2. Use `tavily_search` for current events, real-world facts, recent papers, or \
    anything that needs up-to-date data.
-3. Run 1–3 targeted searches. Each query should be specific — avoid vague queries \
+3. Use `wikipedia_search` for encyclopaedic background, definitions, or historical \
+   context — it's fast and reliable for well-known topics.
+4. Use `url_reader` when you have a specific URL you want to read in full.
+5. Use `datetime_tool` when the question involves the current date or time.
+6. Run 1–3 targeted searches. Each query should be specific — avoid vague queries \
    like "tell me about X". Prefer "X key statistics 2024" or "X vs Y comparison".
-4. Synthesize across sources. Do not dump raw search snippets — draw conclusions.
+7. Synthesize across sources. Do not dump raw search snippets — draw conclusions.
+
+## Long-term memory
+If a `## Long-term memory` section appears in the conversation context, use those \
+facts to personalise your response (e.g. if the user's domain is mentioned, tailor \
+examples accordingly).
 
 ## Output format
 - Lead with the direct answer to the user's question.
@@ -180,14 +205,15 @@ to live web search and the user's uploaded documents.
 
 ANALYSIS_AGENT_PROMPT = """\
 You are AgentFlow's Analysis Agent — a meticulous analyst with access to the \
-user's uploaded documents and a safe calculator tool.
+user's uploaded documents, a safe calculator, and a Python code interpreter.
 
 ## Strategy
 1. ALWAYS call `retrieve_documents` first. The user almost certainly uploaded a \
    document for you to analyse. Read the retrieved excerpts carefully.
-2. Use `calculator` for any numerical computation — do not do arithmetic in your \
-   head for anything beyond trivial sums.
-3. If the retrieved excerpts are insufficient, explicitly note what's missing \
+2. Use `calculator` for quick arithmetic — single expressions.
+3. Use `code_interpreter` for complex numeric computation, statistics, data \
+   transformations, or multi-step calculations. Write clean Python snippets.
+4. If the retrieved excerpts are insufficient, explicitly note what's missing \
    and answer based on what you do have.
 
 ## Output format
@@ -199,7 +225,7 @@ user's uploaded documents and a safe calculator tool.
 - Be specific — reference actual content from the documents, not generic statements.
 
 ## Constraints
-- Ground every claim in retrieved document content or calculator output.
+- Ground every claim in retrieved document content or calculator/code output.
 - Never say "I cannot access files" — you have the `retrieve_documents` tool.
 - Do not pad. If the answer is short, be short.
 """
@@ -232,12 +258,12 @@ Friendly peer, not a corporate chatbot. Direct, helpful, human.
 
 def _output_from_messages(messages) -> str:
     last = messages[-1]
-    if isinstance(last, AIMessage):
-        return content_to_str(last.content)
+    if is_ai_message(last):
+        return content_to_str(get_msg_content(last))
     return content_to_str(last)
 
 
-def research_agent_node(state: AgentState, config: RunnableConfig | None = None) -> dict:
+def research_agent_node(state: AgentState, config: RunnableConfig) -> dict:
     """Sync ReAct agent bound to tavily_search + retrieve_documents.
 
     SYNC on purpose: the pytest suite drives the graph via
@@ -254,7 +280,12 @@ def research_agent_node(state: AgentState, config: RunnableConfig | None = None)
     """
     thread_id = _thread_id_from_config(config)
     tool = make_retrieve_documents_tool(thread_id)
-    agent = _get_cached_agent([tavily_search, tool], llm_fast, prompt=RESEARCH_AGENT_PROMPT, thread_id=thread_id)
+    agent = _get_cached_agent(
+        [tavily_search, wikipedia_search, url_reader, datetime_tool, tool],
+        llm_fast,
+        prompt=RESEARCH_AGENT_PROMPT,
+        thread_id=thread_id,
+    )
     result = agent.invoke({"messages": state["messages"]}, config=config)
     messages = result["messages"]
     return {
@@ -266,7 +297,7 @@ def research_agent_node(state: AgentState, config: RunnableConfig | None = None)
 # --- Analysis agent (calculator + RAG) -------------------------------------
 
 
-def analysis_agent_node(state: AgentState, config: RunnableConfig | None = None) -> dict:
+def analysis_agent_node(state: AgentState, config: RunnableConfig) -> dict:
     """Sync ReAct agent bound to calculator + retrieve_documents.
 
     Same per-invocation tool factory + cached-agent pattern as
@@ -275,7 +306,12 @@ def analysis_agent_node(state: AgentState, config: RunnableConfig | None = None)
     """
     thread_id = _thread_id_from_config(config)
     tool = make_retrieve_documents_tool(thread_id)
-    agent = _get_cached_agent([calculator, tool], llm_fast, prompt=ANALYSIS_AGENT_PROMPT, thread_id=thread_id)
+    agent = _get_cached_agent(
+        [calculator, code_interpreter, tool],
+        llm_fast,
+        prompt=ANALYSIS_AGENT_PROMPT,
+        thread_id=thread_id,
+    )
     result = agent.invoke({"messages": state["messages"]}, config=config)
     messages = result["messages"]
     return {
@@ -287,7 +323,7 @@ def analysis_agent_node(state: AgentState, config: RunnableConfig | None = None)
 # --- Chat agent (RAG-aware direct LLM) ------------------------------------
 
 
-def chat_agent_node(state: AgentState, config: RunnableConfig | None = None) -> dict:
+def chat_agent_node(state: AgentState, config: RunnableConfig) -> dict:
     """Sync ReAct agent with retrieve_documents tool — fast path for casual turns.
 
     Phase 7 fix: chat_agent now has access to the per-thread FAISS retriever

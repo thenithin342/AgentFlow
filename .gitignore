@@ -2,7 +2,11 @@ __pycache__/
 *.py[cod]
 .venv/
 venv/
-.env
+**/.env
+# HMAC secret used by backend/security.py to sign/verify FAISS indexes.
+# Must never be committed — anyone with the file can forge index.pkl
+# signatures and trigger arbitrary pickle RCE on the next load.
+.faiss_secret
 *.db
 *.sqlite3
 faiss_index/

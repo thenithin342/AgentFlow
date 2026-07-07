@@ -70,6 +70,9 @@ def _faiss_index_files_valid(index_path: Path) -> bool:
 def _load_faiss_index(index_path: Path) -> FAISS:
     if not _faiss_index_files_valid(index_path):
         raise FileNotFoundError(f"incomplete FAISS index at {index_path}")
+    from backend.security import verify_file
+    if not verify_file(index_path / "index.pkl"):
+        raise ValueError(f"Integrity check failed for {index_path}/index.pkl")
     return FAISS.load_local(
         str(index_path),
         _get_embeddings(),
@@ -123,6 +126,8 @@ def ingest_pdf(
         else:
             index = FAISS.from_documents(chunks, embeddings)
         index.save_local(str(out))
+        from backend.security import sign_file
+        sign_file(out / "index.pkl")
         _RETRIEVERS.pop(thread_id, None)
 
     document_id = f"{basename}:{len(chunks)}"

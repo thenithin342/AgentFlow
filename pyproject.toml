@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=42", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agentflow"
+version = "0.8.0"
+description = "A multi-agent RAG application using FastAPI, LangGraph, and React"
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [
+    {name = "Nithin", email = "nithin@example.com"}
+]
+dependencies = [
+    "fastapi",
+    "uvicorn",
+    "langchain",
+    "langgraph",
+    "faiss-cpu",
+    "pypdf",
+    "aiosqlite"
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-asyncio~=0.24.0",
+    "httpx"
+]

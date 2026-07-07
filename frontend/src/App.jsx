@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, useMemo, useCallback, memo } from "react";
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import rehypeSanitize from 'rehype-sanitize';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
 
@@ -27,13 +28,17 @@ function apiFetch(path, options = {}) {
   return fetch(apiUrl(path), options);
 }
 
-import { MAX_MESSAGE_CHARS, MAX_UPLOAD_BYTES, TRACE_STREAM_NODES } from "./constants";
+import { MAX_MESSAGE_CHARS, MAX_UPLOAD_BYTES, TRACE_STREAM_NODES, SSE_TOKEN_NODES } from "./constants";
 import { parseSSEPayload } from "./sseParser";
 
 function streamAgentMeta(agent) {
   if (agent === "chat_agent") return "chat";
   if (agent === "research_agent") return "research";
   if (agent === "analysis_agent") return "analysis";
+  if (agent === "blog_writer") return "blog";
+  if (agent === "memory_reader") return "ltm read";
+  if (agent === "memory_writer") return "ltm write";
+  if (agent === "stm_compressor") return "stm compress";
   return agent;
 }
 
@@ -41,6 +46,7 @@ function agentLabelFromRoute(route) {
   if (route === "chat") return "chat_agent";
   if (route === "research") return "research_agent";
   if (route === "analysis") return "analysis_agent";
+  if (route === "blog") return "blog_writer";
   return "synthesizer";
 }
 
@@ -57,6 +63,10 @@ const AGENT_COLORS = {
   chat_agent: "var(--af-chat)",
   synthesizer: "var(--af-synthesizer)",
   human_review: "var(--af-review)",
+  blog_writer: "var(--af-blog)",
+  memory_reader: "var(--af-memory)",
+  memory_writer: "var(--af-memory)",
+  stm_compressor: "var(--af-memory)",
 };
 
 // Citation parser: the synthesizer emits "Sources: [1] https://… [2] https://…"
@@ -389,6 +399,7 @@ const Message = memo(function Message({ msg, onApprove, onEditResend, onSubmitEd
         <div style={{ display: "flex", gap: 8 }}>
           <button
             onClick={onApprove}
+            disabled={timeLeft === 0}
             style={{
               fontFamily: "var(--af-font-mono)",
               fontSize: 11.5,
@@ -397,13 +408,15 @@ const Message = memo(function Message({ msg, onApprove, onEditResend, onSubmitEd
               border: "none",
               borderRadius: 5,
               padding: "6px 12px",
-              cursor: "pointer",
+              cursor: timeLeft === 0 ? "not-allowed" : "pointer",
+              opacity: timeLeft === 0 ? 0.5 : 1,
             }}
           >
             Approve
           </button>
           <button
             onClick={() => onEditResend(msg.text)}
+            disabled={timeLeft === 0}
             style={{
               fontFamily: "var(--af-font-mono)",
               fontSize: 11.5,
@@ -412,7 +425,8 @@ const Message = memo(function Message({ msg, onApprove, onEditResend, onSubmitEd
               border: "1px solid var(--af-review-border)",
               borderRadius: 5,
               padding: "6px 12px",
-              cursor: "pointer",
+              cursor: timeLeft === 0 ? "not-allowed" : "pointer",
+              opacity: timeLeft === 0 ? 0.5 : 1,
             }}
           >
             Edit and resend
@@ -465,6 +479,7 @@ const Message = memo(function Message({ msg, onApprove, onEditResend, onSubmitEd
                 <div className={`markdown-body${collapsed ? " af-msg-collapsed" : ""}`}>
                   <ReactMarkdown
                     remarkPlugins={[remarkGfm]}
+                    rehypePlugins={[rehypeSanitize]}
                     components={{
                       code({ node, inline, className, children, ...props }) {
                         const match = /language-(\w+)/.exec(className || "");
@@ -565,6 +580,11 @@ export default function App() {
   const [threadId, setThreadId] = useState(() => uuid());
   const [messages, setMessages] = useState([]);
   const [theme, setTheme] = useState("dark");
+  // Phase 9: blog output and active main tab
+  const [blogOutput, setBlogOutput] = useState(null);
+  const [activeTab, setActiveTab] = useState("chat"); // "chat" | "blog"
+  // Phase 9: persistent sidebar (replaces old floating history panel)
+  const [sidebarOpen, setSidebarOpen] = useState(true);
 
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
@@ -577,6 +597,12 @@ export default function App() {
   const [editingReview, setEditingReview] = useState(false);
   const [editText, setEditText] = useState("");
   const [statusError, setStatusError] = useState(null);
+  const statusErrorTimeoutRef = useRef(null);
+  const showError = useCallback((msg) => {
+    setStatusError(msg);
+    if (statusErrorTimeoutRef.current) clearTimeout(statusErrorTimeoutRef.current);
+    statusErrorTimeoutRef.current = setTimeout(() => setStatusError(null), 3000);
+  }, []);
   const [showScrollChip, setShowScrollChip] = useState(false);
   const [unreadCount, setUnreadCount] = useState(0);
   const [showShortcuts, setShowShortcuts] = useState(false);
@@ -636,7 +662,10 @@ export default function App() {
 
   const messagesWithCitations = useMemo(() => {
     return messages.map((msg, i) => {
-      if (msg.role !== "agent" || msg.agent !== "synthesizer" || msg.error || msg.streaming) return msg;
+      if (msg.role !== "agent" || msg.error || msg.streaming) return msg;
+      // Parse citations for synthesizer (final polished answer with Sources block)
+      // and research_agent (raw output may include inline [1] url references).
+      if (msg.agent !== "synthesizer" && msg.agent !== "research_agent") return msg;
       const citations = parseCitations(msg.text);
       return citations.length ? { ...msg, citations } : msg;
     });
@@ -668,6 +697,8 @@ export default function App() {
     setEditingReview(false);
     setEditText("");
     setStatusError(null);
+    setBlogOutput(null);
+    setActiveTab("chat");
   }, []);
 
   // Esc key handling also closes the shortcuts popover. The popover's
@@ -735,7 +766,7 @@ export default function App() {
       }
       if (e.key === "h" && (e.metaKey || e.ctrlKey)) {
         e.preventDefault();
-        setShowHistory((v) => !v);
+        setSidebarOpen((v) => !v);
       }
     }
     window.addEventListener("keydown", handleKeyDown);
@@ -777,8 +808,7 @@ export default function App() {
   async function sendMessage(text) {
     if (!text || !text.trim() || isStreaming) return;
     if (text.length > MAX_MESSAGE_CHARS) {
-      setStatusError(`message too long (max ${MAX_MESSAGE_CHARS} characters)`);
-      setTimeout(() => setStatusError(null), 3000);
+      showError(`message too long (max ${MAX_MESSAGE_CHARS} characters)`);
       return;
     }
     if (abortRef.current) abortRef.current.abort();
@@ -806,6 +836,7 @@ export default function App() {
           thread_id: threadId,
           message: text,
           review_required: reviewRequired,
+          user_id: "default",
         }),
         signal: abortRef.current.signal,
       });
@@ -848,8 +879,7 @@ export default function App() {
         ...t.map((e) => (e.active ? { ...e, active: false } : e)),
         { node: "router", label: "error", time: now() },
       ]);
-      setStatusError(err.message || "network error");
-      setTimeout(() => setStatusError(null), 3000);
+      showError(err.message || "network error");
       return;
     }
 
@@ -871,8 +901,7 @@ export default function App() {
             : JSON.stringify(errBody.detail);
         }
       } catch { /* non-JSON body */ }
-      setStatusError(detail);
-      setTimeout(() => setStatusError(null), 3000);
+      showError(detail);
       return;
     }
 
@@ -900,6 +929,7 @@ export default function App() {
     let draft = "";
     let sentinel = null;
     let sourcesCount = 0;
+    let didRunBlogWriter = false;
 
     // Watchdog: if no token arrives for 60s, surface as [ERROR] so the
     // user isn't staring at a frozen cursor. The setInterval is cleared
@@ -985,7 +1015,8 @@ export default function App() {
               next.push({ node, label: "working…", active: true, time: now(), startMs });
               return next;
             });
-            if (TRACE_STREAM_NODES.has(node) && node !== "router") {
+            if (SSE_TOKEN_NODES.has(node)) {
+              if (node === "blog_writer") didRunBlogWriter = true;
               activeStreamAgentRef.current = node;
               setMessages((m) => {
                 const next = [...m];
@@ -1069,8 +1100,7 @@ export default function App() {
       }
       if (streamGenRef.current !== myGen) return;
       setIsStreaming(false);
-      setStatusError(err.message || "stream error");
-      setTimeout(() => setStatusError(null), 3000);
+      showError(err.message || "stream error");
       return;
     } finally {
       clearInterval(watchdog);
@@ -1144,13 +1174,35 @@ export default function App() {
         { node: doneNode, label: "done", time: now(), latency: finalElapsed, startMs: null },
       ]);
     }
+
+    // After a blog_writer turn, fetch the structured blog_output and switch
+    // the UI to the Blog tab automatically.
+    if (didRunBlogWriter && streamGenRef.current === myGen) {
+      try {
+        const blogRes = await apiFetch(`/threads/${threadId}/blog`);
+        if (blogRes.ok) {
+          const blogData = await blogRes.json();
+          if (blogData?.blog_output) {
+            setBlogOutput(blogData.blog_output);
+            setActiveTab("blog");
+          }
+        }
+      } catch { /* silent — blog tab stays empty */ }
+    }
+
+    // Refresh thread list after every completed turn so the sidebar stays current.
+    if (streamGenRef.current === myGen) {
+      setTimeout(() => fetchThreadList(), 800);
+    }
   }
 
   // Wrapper used by the input bar's Enter key and Send button. Reads
   // `input` from state — only the welcome chip path passes an explicit
   // text directly to sendMessage.
   function handleSend() {
-    sendMessage(input.trim());
+    const trimmed = input.trim();
+    if (!trimmed || isStreaming) return;
+    sendMessage(trimmed);
     setInput("");
   }
 
@@ -1179,8 +1231,7 @@ export default function App() {
         signal: AbortSignal.timeout(60000),
       });
       if (!res.ok) {
-        setStatusError(`review failed (${res.status})`);
-        setTimeout(() => setStatusError(null), 3000);
+        showError(`review failed (${res.status})`);
         return;
       }
       const data = await fetchState();
@@ -1230,8 +1281,7 @@ export default function App() {
         signal: AbortSignal.timeout(60000),
       });
       if (!res.ok) {
-        setStatusError(`review failed (${res.status})`);
-        setTimeout(() => setStatusError(null), 3000);
+        showError(`review failed (${res.status})`);
         return;
       }
       const data = await fetchState();
@@ -1288,12 +1338,10 @@ export default function App() {
       if (res.ok) {
         setTrace((t) => [...t, { node: "router", label: "PDF indexed", time: now() }]);
       } else {
-        setStatusError(`upload failed (${res.status})`);
-        setTimeout(() => setStatusError(null), 3000);
+        showError(`upload failed (${res.status})`);
       }
     } catch (err) {
-      setStatusError(err.message || "upload failed");
-      setTimeout(() => setStatusError(null), 3000);
+      showError(err.message || "upload failed");
     } finally {
       setIsUploading(false);
     }
@@ -1301,7 +1349,6 @@ export default function App() {
   }
 
   const [threadList, setThreadList] = useState([]);
-  const [showHistory, setShowHistory] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
 
   // Export conversation as Markdown
@@ -1334,12 +1381,28 @@ export default function App() {
     }
   }, []);
 
+  // Auto-refresh thread list whenever sidebar is open.
   useEffect(() => {
-    if (!showHistory) return;
+    if (!sidebarOpen) return;
     fetchThreadList();
     const id = setInterval(fetchThreadList, 30_000);
     return () => clearInterval(id);
-  }, [fetchThreadList, showHistory]);
+  }, [fetchThreadList, sidebarOpen]);
+
+  async function deleteThread(id, e) {
+    e.stopPropagation();
+    if (!window.confirm(`Delete thread ${id.slice(0, 8)}…? This is irreversible.`)) return;
+    try {
+      await apiFetch(`/threads/${id}`, { method: "DELETE" });
+      if (id === threadId) {
+        resetThread();
+      }
+      fetchThreadList();
+    } catch (err) {
+      console.error("deleteThread failed", err);
+      showError("Failed to delete thread");
+    }
+  }
 
   async function loadThread(id) {
     if (isStreaming) return;
@@ -1356,7 +1419,9 @@ export default function App() {
     setEditingReview(false);
     setEditText("");
     setStatusError(null);
-    setShowHistory(false);
+    setBlogOutput(null);
+    setActiveTab("chat");
+    // Sidebar stays open when switching threads (don't close it)
 
     // Generation counter — if the user clicks another thread before
     // either await resolves, discard the stale response.
@@ -1410,22 +1475,29 @@ export default function App() {
           }
         } catch (e) {
           console.error("Failed to fetch state", e);
-          setStatusError("Failed to load thread state");
-          setTimeout(() => setStatusError(null), 3000);
+          showError("Failed to load thread state");
         }
       } else {
         // History fetch failed — clear messages so the UI does not keep
         // showing content from a previously loaded thread.
         setMessages([]);
-        setStatusError(`Failed to load thread history (${res.status})`);
-        setTimeout(() => setStatusError(null), 3000);
+        showError(`Failed to load thread history (${res.status})`);
       }
     } catch (err) {
       console.error("Failed to load thread history", err);
       setMessages([]);
-      setStatusError(err.message || "Failed to load thread history");
-      setTimeout(() => setStatusError(null), 3000);
+      showError(err.message || "Failed to load thread history");
     }
+    // Also try to fetch blog output for this thread (best-effort)
+    try {
+      const blogRes = await apiFetch(`/threads/${id}/blog`);
+      if (blogRes.ok) {
+        const blogData = await blogRes.json();
+        if (blogData?.blog_output) {
+          setBlogOutput(blogData.blog_output);
+        }
+      }
+    } catch { /* silent — blog output is optional */ }
   }
 
   const handleNewThreadSafe = () => {
@@ -1516,11 +1588,11 @@ export default function App() {
       >
         <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
           <button
-            onClick={() => setShowHistory(h => !h)}
+            onClick={() => setSidebarOpen(h => !h)}
             style={{
               background: "transparent",
               border: "none",
-              color: showHistory ? "var(--af-text-primary)" : "var(--af-text-muted)",
+              color: sidebarOpen ? "var(--af-text-primary)" : "var(--af-text-muted)",
               fontFamily: "var(--af-font-mono)",
               fontSize: 14,
               cursor: "pointer",
@@ -1656,59 +1728,195 @@ export default function App() {
 
       <div className="af-layout" style={{ flex: 1, display: "flex", minHeight: 0, position: "relative" }}>
         
-        {showHistory && (
-          <div className="af-history-panel">
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px 14px", borderBottom: "1px solid var(--af-border)", fontSize: 11, fontFamily: "var(--af-font-mono)", color: "var(--af-text-muted)" }}>
-              <span>CONVERSATIONS</span>
-              <button onClick={() => setShowHistory(false)} style={{ background: "transparent", border: "none", color: "var(--af-text-muted)", cursor: "pointer", fontSize: 12 }} title="Close History">✖</button>
-            </div>
-            <div style={{ padding: "8px 14px", borderBottom: "1px solid var(--af-border)" }}>
-              <input
-                type="text"
-                placeholder="Search by ID..."
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                style={{
-                  width: "100%",
-                  background: "var(--af-bg-surface)",
-                  border: "1px solid var(--af-border)",
-                  borderRadius: 4,
-                  padding: "6px 8px",
-                  color: "var(--af-text-primary)",
-                  fontFamily: "var(--af-font-mono)",
-                  fontSize: 11,
-                  outline: "none",
-                }}
-              />
-            </div>
-            <div className="af-scroll" style={{ flex: 1, overflowY: "auto" }}>
-              {threadList.filter(t => t.thread_id.toLowerCase().includes(searchQuery.toLowerCase())).length === 0 ? (
-                <div style={{ padding: "14px", color: "var(--af-text-muted)", fontSize: 12 }}>No matching conversations.</div>
-              ) : (
-                threadList
-                  .filter(t => t.thread_id.toLowerCase().includes(searchQuery.toLowerCase()))
-                  .map((t) => (
-                  <div
-                    key={t.thread_id}
-                    className={`af-history-item ${t.thread_id === threadId ? "active" : ""}`}
-                    onClick={() => loadThread(t.thread_id)}
-                  >
-                    <div style={{ fontFamily: "var(--af-font-mono)", fontSize: 11, color: t.thread_id === threadId ? "var(--af-text-primary)" : "var(--af-text-body)" }}>
-                      {t.thread_id.slice(0, 8)}...
-                    </div>
-                    <div style={{ fontSize: 10, color: "var(--af-text-muted)" }}>
-                      {formatLastSeen(t.last_seen)}
-                    </div>
-                  </div>
-                ))
-              )}
-            </div>
+        {/* Persistent thread sidebar (replaces old floating history panel) */}
+        <div className={`af-sidebar af-scroll ${sidebarOpen ? "" : "collapsed"}`}>
+          <div className="af-sidebar-header">
+            <span className="af-sidebar-title">Threads</span>
+            <button
+              className="af-new-chat-btn"
+              onClick={handleNewThreadSafe}
+              title="New thread (Cmd+K)"
+            >
+              + New
+            </button>
           </div>
-        )}
+          <div className="af-sidebar-search">
+            <input
+              type="text"
+              placeholder="Search conversations…"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+            />
+          </div>
+          <div className="af-sidebar-threads">
+            {threadList
+              .filter(t =>
+                (t.preview || t.thread_id)
+                  .toLowerCase()
+                  .includes(searchQuery.toLowerCase())
+              )
+              .map((t) => (
+                <div
+                  key={t.thread_id}
+                  className={`af-thread-item ${t.thread_id === threadId ? "active" : ""}`}
+                  onClick={() => loadThread(t.thread_id)}
+                >
+                  <div className="af-thread-preview">
+                    {t.preview || t.thread_id.slice(0, 20) + "…"}
+                  </div>
+                  <div className="af-thread-meta">
+                    <span className="af-thread-time">
+                      {formatLastSeen(t.last_seen)}
+                    </span>
+                    {t.route && (
+                      <span
+                        className="af-thread-route-badge"
+                        style={{
+                          color: t.route === "blog" ? "var(--af-blog)"
+                            : t.route === "research" ? "var(--af-research)"
+                            : t.route === "analysis" ? "var(--af-analysis)"
+                            : "var(--af-text-muted)",
+                        }}
+                      >
+                        {t.route}
+                      </span>
+                    )}
+                    {t.turn_count != null && (
+                      <span style={{ fontFamily: "var(--af-font-mono)", fontSize: 9.5, color: "var(--af-text-muted)" }}>
+                        {t.turn_count}t
+                      </span>
+                    )}
+                  </div>
+                  <button
+                    className="af-thread-delete-btn"
+                    onClick={(e) => deleteThread(t.thread_id, e)}
+                    title="Delete thread"
+                    aria-label={`Delete thread ${t.thread_id.slice(0, 8)}`}
+                  >
+                    ✕
+                  </button>
+                </div>
+              ))
+            }
+            {threadList.length === 0 && (
+              <div style={{ padding: "14px", color: "var(--af-text-muted)", fontSize: 12 }}>
+                No conversations yet.
+              </div>
+            )}
+          </div>
+        </div>
 
         <TraceRail trace={trace} />
 
         <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", position: "relative" }}>
+          {/* Tab bar: Chat | Blog (Blog tab appears after a blog turn) */}
+          <div className="af-blog-tab-bar">
+            <button
+              className={`af-tab-btn ${activeTab === "chat" ? "active" : ""}`}
+              onClick={() => setActiveTab("chat")}
+            >
+              💬 Chat
+            </button>
+            <button
+              className={`af-tab-btn ${activeTab === "blog" ? "active" : ""}`}
+              onClick={() => setActiveTab("blog")}
+              style={{ position: "relative" }}
+            >
+              ✍️ Blog
+              {blogOutput && activeTab !== "blog" && (
+                <span style={{
+                  position: "absolute", top: 4, right: 4,
+                  width: 6, height: 6, borderRadius: "50%",
+                  background: "var(--af-blog)",
+                }} />
+              )}
+            </button>
+          </div>
+
+          {/* Blog viewer tab */}
+          {activeTab === "blog" && (
+            <div style={{ flex: 1, overflow: "hidden", display: "flex", flexDirection: "column" }}>
+              {blogOutput ? (
+                <div className="af-blog-viewer af-scroll af-blog-enter">
+                  <div className="af-blog-title">{blogOutput.title || "Blog Post"}</div>
+                  {blogOutput.meta_description && (
+                    <div style={{ fontSize: 13, color: "var(--af-text-muted)", marginBottom: 14, lineHeight: 1.5, fontStyle: "italic" }}>
+                      {blogOutput.meta_description}
+                    </div>
+                  )}
+                  {blogOutput.tags?.length > 0 && (
+                    <div className="af-blog-meta">
+                      {blogOutput.tags.map(tag => (
+                        <span key={tag} className="af-blog-tag">{tag}</span>
+                      ))}
+                    </div>
+                  )}
+                  {(blogOutput.sections || []).map((section, i) => (
+                    <div key={i}>
+                      {section.heading && (
+                        <div className="af-blog-section-heading">{section.heading}</div>
+                      )}
+                      <div className="af-blog-section-content">
+                        <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeSanitize]}>
+                          {section.content || ""}
+                        </ReactMarkdown>
+                      </div>
+                    </div>
+                  ))}
+                  <div className="af-blog-actions">
+                    <button
+                      className="af-blog-action-btn"
+                      onClick={() => {
+                        const md = [
+                          `# ${blogOutput.title}`,
+                          blogOutput.meta_description ? `*${blogOutput.meta_description}*` : "",
+                          ...(blogOutput.sections || []).map(s =>
+                            `## ${s.heading}\n\n${s.content}`
+                          ),
+                        ].filter(Boolean).join("\n\n");
+                        const blob = new Blob([md], { type: "text/markdown" });
+                        const url = URL.createObjectURL(blob);
+                        const a = document.createElement("a");
+                        a.href = url;
+                        a.download = `${(blogOutput.title || "blog").toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, "")}.md`;
+                        a.click();
+                        setTimeout(() => URL.revokeObjectURL(url), 100);
+                      }}
+                    >
+                      ⬇️ Download Markdown
+                    </button>
+                    <button
+                      className="af-blog-action-btn"
+                      onClick={() => {
+                        const text = (blogOutput.sections || []).map(s =>
+                          `${s.heading}\n\n${s.content}`
+                        ).join("\n\n");
+                        navigator.clipboard.writeText(text).catch(() => {});
+                      }}
+                    >
+                      📋 Copy Text
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div className="af-blog-empty">
+                  <div className="af-blog-empty-icon">✍️</div>
+                  <div>No blog post yet.</div>
+                  <div style={{ fontSize: 11, opacity: 0.7 }}>Ask AgentFlow to write a blog post.</div>
+                  <button
+                    className="af-welcome-chip"
+                    onClick={() => { setActiveTab("chat"); sendMessage("Write a blog post about the future of AI and large language models."); }}
+                    style={{ marginTop: 12 }}
+                  >
+                    Try: Write a blog post about AI →
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Chat tab */}
+          {activeTab === "chat" && (
           <div
             ref={scrollRef}
             onScroll={handleScroll}
@@ -1760,7 +1968,8 @@ export default function App() {
                     {[
                       "What are the latest AI research papers?",
                       "Summarize the uploaded PDF",
-                      "Write a python script to parse CSV",
+                      "Write a blog post about the future of AI",
+                      "Calculate compound interest on $5000 at 4% for 10 years",
                     ].map((prompt) => (
                       <button
                         key={prompt}
@@ -1814,6 +2023,7 @@ export default function App() {
               </div>
             )}
           </div>
+          )} {/* end activeTab === "chat" */}
 
           {/* Hidden live region for screen readers */}
           <div aria-live="polite" style={{ position: "absolute", width: 1, height: 1, padding: 0, margin: -1, overflow: "hidden", clip: "rect(0, 0, 0, 0)", whiteSpace: "nowrap", border: 0 }}>
@@ -1970,6 +2180,11 @@ export default function App() {
             {input.trim().length > 0 && (
               <span className="af-word-count">
                 {input.trim().split(/\s+/).length} words
+                {input.length > MAX_MESSAGE_CHARS * 0.8 && (
+                  <span style={{ marginLeft: 8, color: input.length > MAX_MESSAGE_CHARS ? "var(--af-error)" : "inherit" }}>
+                    | {input.length} / {MAX_MESSAGE_CHARS} chars
+                  </span>
+                )}
               </span>
             )}
             <button

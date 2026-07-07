@@ -53,6 +53,8 @@ def _agent_name_for_route(state: AgentState) -> str:
         return "research_agent"
     if route == "analysis":
         return "analysis_agent"
+    if route == "blog":
+        return "blog_writer"
     return "synthesizer"
 
 

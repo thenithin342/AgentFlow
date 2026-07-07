@@ -128,4 +128,4 @@ Each node is unit-testable in isolation by constructing a minimal `AgentState` d
 
 ## 10. Open Questions / Future Extensions
 
-Parallel multi-agent dispatch for compound queries (noted in §4). Swapping `SqliteSaver` for `PostgresSaver` for true concurrent-write durability. Adding a memory-summarization node that compresses old turns once `messages` grows past a token budget, rather than truncating naively.
+Parallel multi-agent dispatch for compound queries (noted in §4). Swapping `SqliteSaver` for `PostgresSaver` for true concurrent-write durability.

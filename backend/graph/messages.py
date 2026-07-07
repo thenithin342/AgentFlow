@@ -17,3 +17,23 @@ def content_to_str(content) -> str:
             if isinstance(part, dict)
         )
     return str(content)
+
+
+def _msg_type(msg) -> str:
+    if isinstance(msg, dict):
+        return msg.get("type", "")
+    return getattr(msg, "type", "")
+
+def is_tool_message(msg) -> bool:
+    return _msg_type(msg) == "tool"
+
+def is_ai_message(msg) -> bool:
+    return _msg_type(msg) == "ai"
+
+def is_human_message(msg) -> bool:
+    return _msg_type(msg) == "human"
+
+def get_msg_content(msg):
+    if isinstance(msg, dict):
+        return msg.get("content", "")
+    return getattr(msg, "content", "")

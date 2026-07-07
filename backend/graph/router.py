@@ -30,7 +30,7 @@ logger = logging.getLogger("agentflow.router")
 
 ROUTER_SYSTEM_PROMPT = """\
 You are a routing classifier for a multi-agent assistant. Your only job is to
-classify the user's latest message into exactly one of three categories:
+classify the user's latest message into exactly one of four categories:
 
 - research: the user wants fresh, external information retrieved from the web
   (news, latest papers, current events, lookups about real-world entities,
@@ -40,6 +40,9 @@ classify the user's latest message into exactly one of three categories:
   contrast chapters, compute totals, analyze). ALSO use analysis when the user
   asks about an uploaded document or PDF — e.g. "what is this about?",
   "summarize the document", "what does the file say about X?".
+- blog: the user wants a blog post, article, or long-form written content created
+  on a topic. Triggers include: "write a blog post", "draft an article",
+  "create a blog", "write about X for my blog", "article about", "write up on".
 - chat: the user is making small talk, asking a follow-up clarification,
   rephrasing, thanking, asking to shorten or rewrite, or holding a normal
   conversation turn that needs no tool.
@@ -88,6 +91,21 @@ Answer: analysis
 User: "What is in the uploaded file?"
 Answer: analysis
 
+User: "Write a blog post about the future of AI."
+Answer: blog
+
+User: "Draft an article on climate change solutions."
+Answer: blog
+
+User: "Create a blog post explaining how LangGraph works."
+Answer: blog
+
+User: "Write up an article about Python for beginners."
+Answer: blog
+
+User: "I need a blog post about healthy eating habits."
+Answer: blog
+
 User: "Thanks, can you shorten that?"
 Answer: chat
 
@@ -100,14 +118,14 @@ Answer: chat
 User: "Got it, please continue."
 Answer: chat
 
-Respond with ONLY the word: research, analysis, or chat.
+Respond with ONLY the word: research, analysis, blog, or chat.
 No explanation, no punctuation, no extra text.
 """
 
 
 # --- Helpers ----------------------------------------------------------------
 
-_VALID_LABELS = {"research", "analysis", "chat"}
+_VALID_LABELS = {"research", "analysis", "chat", "blog"}
 _PUNCT = ",.!?:;\"'`"
 
 
@@ -134,7 +152,9 @@ def _route_for_message(user_text: str) -> str:
         [
             SystemMessage(content=ROUTER_SYSTEM_PROMPT),
             HumanMessage(content=user_text),
-        ]
+        ],
+        timeout=5.0,
+        config={"tags": ["router"]},
     )
     return _parse_label(content_to_str(response.content))
 
@@ -168,10 +188,12 @@ def router_node(state: AgentState) -> dict:
     return {
         "route": label,
         # Reset per-turn scratch fields so stale agent_output / sources /
-        # final_response from a prior turn cannot leak into the new route.
+        # final_response / blog_output from a prior turn cannot leak into the
+        # new route.
         "agent_output": None,
         "sources": [],
         "final_response": None,
+        "blog_output": None,
     }
 
 

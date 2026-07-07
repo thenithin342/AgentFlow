@@ -22,6 +22,7 @@ Reference: DESIGN_DOC.md section 7 "API Design (FastAPI)".
 """
 
 import asyncio
+import hmac
 import json
 import logging
 import os
@@ -49,7 +50,7 @@ from backend.constants import (
 )
 from backend.graph.build_graph import builder
 from backend.graph.human_review import APPROVE_SENTINEL
-from backend.graph.messages import content_to_str
+from backend.graph.messages import content_to_str, is_human_message, _msg_type
 from backend.rag.ingest import ingest_pdf, warm_embeddings
 from backend.validation import THREAD_ID_RE, validate_thread_id
 
@@ -89,6 +90,11 @@ _API_KEY = os.environ.get("AGENTFLOW_API_KEY", "").strip()
 _upload_locks: OrderedDict[str, asyncio.Lock] = OrderedDict()
 _upload_locks_guard = asyncio.Lock()
 
+from collections import defaultdict
+import time
+# Token bucket for failed auths per IP: decays 1 token / 10s. Max 10 tokens.
+_failed_auths = defaultdict(lambda: {"count": 0.0, "last": time.time()})
+
 
 # --- Lifespan: async graph + checkpointer ----------------------------------
 
@@ -122,6 +128,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             yield
         finally:
             logger.info("[AgentFlow] shutting down — closing async checkpointer")
+            await conn.close()
 
 
 # --- App --------------------------------------------------------------------
@@ -132,16 +139,34 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=_CORS_ORIGINS,
     allow_credentials=False,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization", "X-API-Key"],
 )
 
+
+@app.middleware("http")
+async def add_request_id(request: Request, call_next):
+    req_id = request.headers.get("X-Request-ID", _uuid_mod.uuid4().hex)
+    response = await call_next(request)
+    response.headers["X-Request-ID"] = req_id
+    return response
 
 @app.middleware("http")
 async def optional_api_key_auth(request: Request, call_next):
     """Enforce AGENTFLOW_API_KEY when configured. /health stays public."""
     if not _API_KEY or request.url.path == "/health":
         return await call_next(request)
+    
+    client_ip = request.client.host if request.client else "unknown"
+    state = _failed_auths[client_ip]
+    now = time.time()
+    elapsed = now - state["last"]
+    state["count"] = max(0.0, state["count"] - elapsed / 10.0)
+    state["last"] = now
+    
+    if state["count"] > 10.0:
+        return JSONResponse(status_code=429, content={"detail": "Too many failed attempts"})
+
     auth = request.headers.get("Authorization", "")
     header_key = request.headers.get("X-API-Key", "")
     token = ""
@@ -149,7 +174,8 @@ async def optional_api_key_auth(request: Request, call_next):
         token = auth[7:].strip()
     elif header_key:
         token = header_key.strip()
-    if token != _API_KEY:
+    if not token or not hmac.compare_digest(token, _API_KEY):
+        state["count"] += 1.0
         return JSONResponse(status_code=401, content={"detail": "unauthorized"})
     return await call_next(request)
 
@@ -161,6 +187,9 @@ class ChatRequest(BaseModel):
     thread_id: str
     message: str
     review_required: bool = False
+    # Optional user_id for LTM scoping. Defaults to "default" for single-user
+    # local setups — every thread from the same user shares LTM this way.
+    user_id: str = "default"
 
     @field_validator("thread_id")
     @classmethod
@@ -175,6 +204,13 @@ class ChatRequest(BaseModel):
                 f"message too long (max {MAX_MESSAGE_CHARS} characters)"
             )
         return v
+
+    @field_validator("user_id")
+    @classmethod
+    def user_id_safe(cls, v: str) -> str:
+        # Sanitise: only alphanumeric, dash, underscore, dot; max 64 chars
+        safe = "".join(c for c in v if c.isalnum() or c in "-_.")
+        return safe[:64] or "default"
 
 
 class ReviewRequest(BaseModel):
@@ -242,23 +278,30 @@ def _serialize_state_values(values: dict) -> dict:
     return out
 
 
-def _config_for(thread_id: str) -> dict:
+def _config_for(thread_id: str, user_id: str = "default") -> dict:
     """Standard LangGraph RunnableConfig for a given thread_id."""
     try:
         validate_thread_id(thread_id)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return {"configurable": {"thread_id": thread_id}}
+    return {"configurable": {"thread_id": thread_id, "user_id": user_id}}
 
 
 async def _get_upload_lock(thread_id: str) -> asyncio.Lock:
     async with _upload_locks_guard:
         if thread_id not in _upload_locks:
+            # O(1) eviction strategy
             while len(_upload_locks) >= 1000:
-                for old_thread_id, old_lock in list(_upload_locks.items()):
+                # Find an unlocked lock by checking the oldest items
+                # We do at most 1000 iterations in the worst case (all locked), but O(1) space and fast
+                for _ in range(len(_upload_locks)):
+                    old_thread_id, old_lock = next(iter(_upload_locks.items()))
                     if not old_lock.locked():
                         _upload_locks.pop(old_thread_id)
                         break
+                    else:
+                        # Move to end so we check the next oldest
+                        _upload_locks.move_to_end(old_thread_id)
                 else:
                     logger.warning("[AgentFlow] Pathological lock congestion: max upload locks reached and none are free")
                     raise HTTPException(
@@ -372,25 +415,37 @@ async def _ensure_checkpoint_tables(db, graph=None) -> None:
 @app.get("/health")
 async def health() -> dict:
     """Liveness probe — graph, DB, and embeddings readiness."""
+    timings = {}
+    
+    t0 = time.perf_counter()
     graph_ok = getattr(app.state, "graph", None) is not None
+    timings["graph"] = round(time.perf_counter() - t0, 4)
+    
     db_ok = False
+    t1 = time.perf_counter()
     try:
         async with aiosqlite.connect(_DB_PATH, timeout=2.0) as db:
             await db.execute("SELECT 1")
             db_ok = True
     except Exception:
         logger.exception("[AgentFlow] health DB check failed")
+    timings["db"] = round(time.perf_counter() - t1, 4)
+        
     embeddings_ok = False
+    t2 = time.perf_counter()
     try:
         await asyncio.to_thread(warm_embeddings)
         embeddings_ok = True
     except Exception:
         logger.exception("[AgentFlow] health embeddings check failed")
+    timings["embeddings"] = round(time.perf_counter() - t2, 4)
+        
     return {
         "status": "ok" if graph_ok and db_ok else "degraded",
         "graph": graph_ok,
         "db": db_ok,
         "embeddings": embeddings_ok,
+        "timings": timings,
     }
 
 
@@ -403,7 +458,7 @@ async def chat(req: ChatRequest) -> StreamingResponse:
     `data: [INTERRUPT]\n\n` if the graph paused at human_review (only
     possible when `review_required=True`).
     """
-    config = _config_for(req.thread_id)
+    config = _config_for(req.thread_id, req.user_id)
     input_state = {
         "messages": [HumanMessage(content=req.message)],
         "review_required": req.review_required,
@@ -670,28 +725,76 @@ async def get_thread_state(thread_id: str) -> dict:
 
 @app.get("/threads")
 async def list_threads() -> dict:
-    """List all distinct thread_ids with their last update time, ordered by most recent."""
+    """List all distinct thread_ids with last update, message preview, and turn count."""
     threads = []
     try:
         async with aiosqlite.connect(_DB_PATH, timeout=5.0) as db:
             await _ensure_checkpoint_tables(db, getattr(app.state, "graph", None))
-            # rowid is monotonic per table — better recency proxy than
-            # max(checkpoint_id) when ids are opaque UUIDs.
             cursor = await db.execute(
-                "SELECT c.thread_id, c.checkpoint_id "
+                "SELECT c.thread_id, c.checkpoint_id, c.checkpoint "
                 "FROM checkpoints c "
                 "INNER JOIN ("
-                "  SELECT thread_id, max(rowid) AS last_row "
+                "  SELECT thread_id, max(checkpoint_id) AS last_chk "
                 "  FROM checkpoints GROUP BY thread_id"
-                ") latest ON c.rowid = latest.last_row "
-                "ORDER BY latest.last_row DESC LIMIT 50"
+                ") latest ON c.thread_id = latest.thread_id AND c.checkpoint_id = latest.last_chk "
+                "ORDER BY latest.last_chk DESC LIMIT 100"
             )
             rows = await cursor.fetchall()
-            for thread_id, checkpoint_id in rows:
-                threads.append({
-                    "thread_id": thread_id,
-                    "last_seen": _checkpoint_id_to_iso(checkpoint_id),
-                })
+
+        # Build base entries from the DB rows.
+        entries = []
+        for thread_id, checkpoint_id, checkpoint_blob in rows:
+            entries.append({
+                "thread_id": thread_id,
+                "last_seen": _checkpoint_id_to_iso(checkpoint_id),
+                "preview": None,
+                "turn_count": None,
+                "route": None,
+                "_has_blob": bool(checkpoint_blob),
+            })
+
+        # Enrich entries with live state (route, turn_count, preview) by calling
+        # aget_state concurrently for all threads that have checkpoint data.
+        # LangGraph's AsyncSqliteSaver uses JSON/msgpack — NOT pickle — so we
+        # must use the graph's public API rather than deserialising the raw blob.
+        graph = getattr(app.state, "graph", None)
+        if graph is not None:
+            sem = asyncio.Semaphore(10)
+            
+            async def _fetch_entry_meta(entry: dict) -> dict:
+                if not entry["_has_blob"]:
+                    return entry
+                async with sem:
+                    try:
+                        cfg = {"configurable": {"thread_id": entry["thread_id"]}}
+                        snap = await graph.aget_state(cfg)
+                        if snap and snap.values:
+                            cv = snap.values
+                            entry["route"] = cv.get("route")
+                            entry["turn_count"] = cv.get("turn_count")
+                            msgs = cv.get("messages") or []
+                            for m in reversed(msgs):
+                                if is_human_message(m):
+                                    text = content_to_str(
+                                        m.content if hasattr(m, "content") else m
+                                    )
+                                    entry["preview"] = text[:120] + ("…" if len(text) > 120 else "")
+                                    break
+                            if entry["turn_count"] is None:
+                                entry["turn_count"] = sum(
+                                    1 for m in msgs if is_human_message(m)
+                                )
+                    except Exception:
+                        pass  # best-effort; entry stays with None fields
+                    return entry
+
+            entries = list(await asyncio.gather(*(_fetch_entry_meta(e) for e in entries)))
+
+        # Strip the internal _has_blob key before returning.
+        for e in entries:
+            e.pop("_has_blob", None)
+        threads = entries
+
     except Exception:
         logger.exception("[AgentFlow] /threads failed")
         raise HTTPException(status_code=500, detail="internal server error")
@@ -717,7 +820,7 @@ async def get_thread_history(thread_id: str) -> dict:
 
     if "messages" in values:
         for m in values["messages"]:
-            role = "user" if m.type == "human" else "agent"
+            role = "user" if is_human_message(m) else "agent"
             agent = getattr(m, "name", None) or None
             if agent == "chat":
                 agent = "chat_agent"
@@ -798,7 +901,9 @@ async def review(thread_id: str, req: ReviewRequest) -> dict:
         snap = await graph.aget_state(config)
         if not _snapshot_has_interrupt(snap):
             raise HTTPException(status_code=409, detail="no pending interrupt for this thread")
-        await graph.ainvoke(Command(resume=resume_value), config=config)
+        await asyncio.wait_for(
+            graph.ainvoke(Command(resume=resume_value), config=config), timeout=60.0
+        )
     except HTTPException:
         raise
     except Exception:
@@ -806,3 +911,76 @@ async def review(thread_id: str, req: ReviewRequest) -> dict:
         raise HTTPException(status_code=500, detail="internal server error")
 
     return {"status": "resumed", "thread_id": thread_id}
+
+
+@app.get("/threads/{thread_id}/blog")
+async def get_thread_blog(thread_id: str) -> dict:
+    """Return the latest structured blog_output for a thread.
+
+    Returns `{thread_id, blog_output}` where `blog_output` is the dict
+    produced by blog_writer_node, or null if the thread has no blog post.
+    """
+    graph = app.state.graph
+    config = _config_for(thread_id)
+    try:
+        snap = await graph.aget_state(config)
+    except Exception:
+        logger.exception("[AgentFlow] /threads/%s/blog failed", thread_id)
+        raise HTTPException(status_code=500, detail="internal server error")
+    values = snap.values if snap else {}
+    blog_output = values.get("blog_output")
+    return {
+        "thread_id": thread_id,
+        "blog_output": blog_output,
+    }
+
+
+@app.delete("/threads/{thread_id}")
+async def delete_thread(thread_id: str) -> dict:
+    """Delete all checkpoint rows and FAISS index for a thread.
+
+    Removes the thread from the conversation list. This is irreversible.
+    """
+    try:
+        validate_thread_id(thread_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    deleted_checkpoints = 0
+    deleted_faiss = False
+
+    try:
+        async with aiosqlite.connect(_DB_PATH, timeout=5.0) as db:
+            await _ensure_checkpoint_tables(db, getattr(app.state, "graph", None))
+            cursor = await db.execute(
+                "DELETE FROM checkpoints WHERE thread_id = ?", (thread_id,)
+            )
+            deleted_checkpoints = cursor.rowcount
+            await db.commit()
+    except Exception:
+        logger.exception("[AgentFlow] DELETE /threads/%s failed (DB)", thread_id)
+        raise HTTPException(status_code=500, detail="internal server error")
+
+    # Remove the FAISS index directory for this thread
+    try:
+        from backend.rag.ingest import INDEX_ROOT
+        import shutil as _shutil
+        idx_path = INDEX_ROOT / thread_id
+        if idx_path.is_dir():
+            await asyncio.to_thread(_shutil.rmtree, str(idx_path), ignore_errors=True)
+            deleted_faiss = True
+    except Exception:
+        logger.warning("[AgentFlow] DELETE /threads/%s: FAISS cleanup failed", thread_id)
+
+    logger.info(
+        "[AgentFlow] deleted thread %s: %d checkpoints, faiss=%s",
+        thread_id,
+        deleted_checkpoints,
+        deleted_faiss,
+    )
+    return {
+        "status": "deleted",
+        "thread_id": thread_id,
+        "deleted_checkpoints": deleted_checkpoints,
+        "deleted_faiss": deleted_faiss,
+    }

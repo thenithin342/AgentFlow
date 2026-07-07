@@ -624,7 +624,7 @@ def test_retrieve_documents_handles_missing_index():
 
 def test_ingest_pdf_appends_to_existing_index():
     """Re-uploading a PDF must merge into the existing FAISS index."""
-    from backend.rag.ingest import ingest_pdf, get_retriever_cached, INDEX_ROOT
+    from backend.rag.ingest import ingest_pdf, get_retriever, INDEX_ROOT
     from backend.graph.tools import make_retrieve_documents_tool
 
     thread = "test-rag-append-001"
@@ -641,7 +641,7 @@ def test_ingest_pdf_appends_to_existing_index():
 
     # Second ingest on same thread — index must retain prior content.
     ingest_pdf(sample, thread)
-    get_retriever_cached(thread)  # reload from disk
+    get_retriever(thread)  # reload from disk
     second = tool.invoke({"query": "When was AgentFlow founded?"})
     assert "2024" in second or "AgentFlow" in second
     assert index_dir.exists()

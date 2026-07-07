@@ -69,7 +69,7 @@ def _ensure_thread_id(args: tuple, kwargs: dict, default: str) -> dict:
         # explicit thread_id that doesn't match the allowlist, we'd
         # rather fail loudly here than crash with a confusing langgraph
         # error inside the graph.
-        if not _THREAD_ID_RE.fullmatch(default):
+        if not THREAD_ID_RE.fullmatch(default):
             raise ValueError(
                 f"default thread_id {default!r} fails allowlist — "
                 "fix _default_thread_id in tests/conftest.py"

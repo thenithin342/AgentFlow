@@ -9,8 +9,12 @@ TRACE_STREAM_NODES = frozenset({
     "chat_agent",
     "research_agent",
     "analysis_agent",
+    "blog_writer",
     "synthesizer",
     "human_review",
+    "memory_reader",
+    "memory_writer",
+    "stm_compressor",
 })
 
 # Nodes whose on_chat_model_stream tokens are forwarded to the client.
@@ -19,4 +23,5 @@ SSE_TOKEN_NODES = frozenset({
     "chat_agent",
     "research_agent",
     "analysis_agent",
+    "blog_writer",
 })

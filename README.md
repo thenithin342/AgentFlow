@@ -401,7 +401,6 @@ pytest tests/ --cov=backend --cov-report=term-missing
 
 - **Parallel multi-agent dispatch** — fan out to multiple agents simultaneously for compound queries (e.g., *"research X and calculate Y"*), re-joining at the Synthesizer via LangGraph fan-out edges
 - **PostgreSQL checkpointer** — swap `SqliteSaver` for `PostgresSaver` for true concurrent multi-user write durability
-- **Memory summarization** — compress old conversation turns once `messages` exceeds a token budget to avoid naive truncation
 - **Streaming agent badges** — push routing decisions to the frontend in real-time as graph execution progresses
 
 ---

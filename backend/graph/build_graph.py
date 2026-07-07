@@ -2,6 +2,12 @@
 Graph construction — wires every node and edge together into the compiled
 AgentFlow StateGraph.
 
+Phase 9 (current): Added memory nodes, blog writer, and new tools.
+    - memory_reader_node fires at START (injects LTM context)
+    - stm_compressor_node fires conditionally after human_review
+    - memory_writer_node fires after STM (or directly after human_review)
+    - blog_writer_node added as a 4th agent route
+
 Phase 3: real router + 3 agent nodes (research, analysis, chat). Each
 agent goes straight to END — the Synthesizer arrives in Phase 5 and
 Human Review arrives in Phase 6.
@@ -44,22 +50,40 @@ from backend.graph.agents import (
     analysis_agent_node,
     chat_agent_node,
 )
+from backend.graph.blog_agent import blog_writer_node
 from backend.graph.synthesizer import synthesizer_node
 from backend.graph.human_review import human_review_node
+from backend.graph.memory_nodes import (
+    memory_reader_node,
+    memory_writer_node,
+    stm_compressor_node,
+    should_run_stm,
+)
 
 
 # --- Graph topology (pure — no DB, no side effects) ------------------------
 
 builder = StateGraph(AgentState)
 
+# Memory nodes
+builder.add_node("memory_reader", memory_reader_node)
+builder.add_node("memory_writer", memory_writer_node)
+builder.add_node("stm_compressor", stm_compressor_node)
+
+# Core pipeline nodes
 builder.add_node("router", router_node)
 builder.add_node("research_agent", research_agent_node)
 builder.add_node("analysis_agent", analysis_agent_node)
 builder.add_node("chat_agent", chat_agent_node)
+builder.add_node("blog_writer", blog_writer_node)
 builder.add_node("synthesizer", synthesizer_node)
 builder.add_node("human_review", human_review_node)
 
-builder.add_edge(START, "router")
+# START → memory_reader → router
+builder.add_edge(START, "memory_reader")
+builder.add_edge("memory_reader", "router")
+
+# Router → agents (conditional)
 builder.add_conditional_edges(
     "router",
     route_query,
@@ -67,19 +91,22 @@ builder.add_conditional_edges(
         "research": "research_agent",
         "analysis": "analysis_agent",
         "chat": "chat_agent",
+        "blog": "blog_writer",
     },
 )
+
+# Research + Analysis → synthesizer
 builder.add_edge("research_agent", "synthesizer")
 builder.add_edge("analysis_agent", "synthesizer")
 
 
-# Phase 2: chat turns write `final_response` directly in chat_agent_node
-# and skip the synthesizer. Research/analysis still pass through synth to
-# polish the answer into `final_response`. The conditional edge branches
-# on `state["route"]` set by the router — non-chat routes go to synth,
-# chat goes straight to human_review (pass-through when no review needed).
+# Chat and blog turns write `final_response` directly and skip the synthesizer.
+# The conditional edge branches on state["route"].
 def route_query_to_synth(state: AgentState) -> str:
-    return "synthesizer" if state.get("route") in {"research", "analysis"} else "human_review"
+    route = state.get("route")
+    if route in {"research", "analysis"}:
+        return "synthesizer"
+    return "human_review"
 
 
 builder.add_conditional_edges(
@@ -87,8 +114,20 @@ builder.add_conditional_edges(
     route_query_to_synth,
     {"synthesizer": "synthesizer", "human_review": "human_review"},
 )
+
+# Blog agent writes final_response + blog_output directly, skips synthesizer
+builder.add_edge("blog_writer", "human_review")
+
 builder.add_edge("synthesizer", "human_review")
-builder.add_edge("human_review", END)
+
+# human_review → conditional: STM compression or straight to memory_writer
+builder.add_conditional_edges(
+    "human_review",
+    should_run_stm,
+    {"stm_compressor": "stm_compressor", "memory_writer": "memory_writer"},
+)
+builder.add_edge("stm_compressor", "memory_writer")
+builder.add_edge("memory_writer", END)
 
 
 # --- Checkpointer / DB side effect ---------------------------------------
@@ -113,19 +152,10 @@ builder.add_edge("human_review", END)
 # PHASE 8 NOTE — async streaming upgrade:
 #   The FastAPI server does NOT import `graph` from here for streaming.
 #   It creates its own AsyncSqliteSaver inside the FastAPI async lifespan
-#   context and re-compiles the graph there:
-#
-#     from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
-#     import aiosqlite
-#     async def lifespan(app):
-#         async with aiosqlite.connect(db_path) as conn:
-#             checkpointer = AsyncSqliteSaver(conn)
-#             app.state.graph = builder.compile(checkpointer=checkpointer)
-#             yield
+#   context and re-compiles the graph there.
 #
 # This is the correct LangGraph pattern: sync graph for tests/CLI,
 # async graph (re-compiled with AsyncSqliteSaver) for the API server.
-# TODO: implement retention policy before production (Phase 7+).
 _DEFAULT_DB_PATH = os.environ.get("CHECKPOINT_DB_PATH", "agentflow.db")
 
 
@@ -153,47 +183,62 @@ def build_compiled_graph(db_path: Optional[str] = None) -> CompiledStateGraph:
 
 # ---------------------------------------------------------------------------
 # Lazy default graph — used by the test suite and CLI tools.
-#
-# We do NOT call build_compiled_graph() at module import time because
-# backend/main.py imports `builder` from this module. That import would
-# trigger build_compiled_graph() and open a *second* sync SQLite
-# connection on the same DB file before the FastAPI lifespan opens its
-# async one — undermining the topology/side-effect separation and
-# potentially locking the DB on Windows.
-#
-# Call get_default_graph() explicitly in tests and CLI scripts instead
-# of relying on the module-level `graph` name.
 # ---------------------------------------------------------------------------
 
+import threading
 _default_graph: CompiledStateGraph | None = None
+_default_graph_lock = threading.Lock()
+# Serializes all sync .invoke() / .stream() / .astream_events() calls into the
+# default graph. The default graph's SqliteSaver holds a single sync
+# sqlite3.Connection with `check_same_thread=False`; even with that flag, the
+# Python sqlite3 module serialises the *Connection* via an internal lock but
+# does NOT serialise LangGraph's per-call cursor + checkpoint write/read
+# sequences — concurrent sync calls on the same connection can interleave
+# cursor state and corrupt checkpoint rows. This lock wraps the entire call
+# so the connection sees one request at a time.
+# RLock (not Lock) so the proxy's `__getattr__` wrapper can re-acquire when a
+# caller like `tests/conftest.py::_default_thread_id` wraps the locked entry
+# point with a thread_id injector: that wrapper calls the original (locked)
+# entry point, and the proxy's getter re-wraps the patched version. The
+# second acquire is on the same thread → RLock succeeds where Lock would
+# deadlock. Async callers (FastAPI astream_events/ainvoke in main.py) use a
+# separate AsyncSqliteSaver and are NOT routed through this lock.
+_invoke_lock = threading.RLock()
+
+_SYNC_ENTRY_POINTS = frozenset({"invoke", "stream", "astream_events"})
 
 
 def get_default_graph() -> CompiledStateGraph:
-    """Return the lazily-created default sync compiled graph.
-
-    The graph (and its underlying sqlite3 connection) is built on the
-    first call and reused for all subsequent calls within the same
-    process.  Tests and CLI tools should call this instead of importing
-    the old module-level ``graph`` name.
-    """
+    """Return the lazily-created default sync compiled graph."""
     global _default_graph
     if _default_graph is None:
-        _default_graph = build_compiled_graph()
+        with _default_graph_lock:
+            if _default_graph is None:
+                _default_graph = build_compiled_graph()
     return _default_graph
 
 
-# Backwards-compatible alias so that
-#   from backend.graph.build_graph import graph
-# still works in existing test files without modification.
-# The property resolves lazily on first attribute access.
 class _GraphProxy:
     """Thin proxy that forwards every attribute to the lazily-built default
     graph.  This preserves the ``from build_graph import graph`` import
     style used in tests/conftest.py and test_graph.py while avoiding
-    the eager DB connection at import time."""
+    the eager DB connection at import time.
+
+    `invoke` / `stream` / `astream_events` are funnelled through
+    `_invoke_lock` so concurrent sync calls on the underlying
+    sqlite3.Connection cannot interleave checkpoint reads/writes. Async
+    callers (FastAPI astream_events in main.py) use a different
+    AsyncSqliteSaver and are NOT routed through this lock.
+    """
 
     def __getattr__(self, name: str):
-        return getattr(get_default_graph(), name)
+        target = getattr(get_default_graph(), name)
+        if name in _SYNC_ENTRY_POINTS:
+            def locked_call(*args, **kwargs):
+                with _invoke_lock:
+                    return target(*args, **kwargs)
+            return locked_call
+        return target
 
     def __setattr__(self, name: str, value):
         setattr(get_default_graph(), name, value)

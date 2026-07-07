@@ -11,13 +11,13 @@ export function parseSSEPayload(rawPayload) {
   if (payload === "[INTERRUPT]") return { kind: "interrupt" };
   if (payload.startsWith("[ERROR]")) return { kind: "error", value: payload };
 
-  if (payload.startsWith("[SOURCES:")) {
+  if (payload.startsWith("[SOURCES:") && payload.endsWith("]")) {
     const n = parseInt(payload.slice(9, -1), 10);
     if (Number.isFinite(n) && n >= 0) return { kind: "sources", value: n };
     return { kind: "skip" };
   }
 
-  if (payload.startsWith("[FINAL:")) {
+  if (payload.startsWith("[FINAL:") && payload.endsWith("]")) {
     try {
       return { kind: "final", value: JSON.parse(payload.slice(7, -1)) };
     } catch {
@@ -25,11 +25,11 @@ export function parseSSEPayload(rawPayload) {
     }
   }
 
-  if (payload.startsWith("[TOOL_START:")) {
+  if (payload.startsWith("[TOOL_START:") && payload.endsWith("]")) {
     return { kind: "tool_start", value: payload.slice(12, -1) };
   }
 
-  if (payload.startsWith("[NODE_START:")) {
+  if (payload.startsWith("[NODE_START:") && payload.endsWith("]")) {
     const inner = payload.slice(12, -1);
     const pipeIdx = inner.indexOf("|");
     const node = pipeIdx === -1 ? inner : inner.slice(0, pipeIdx);
@@ -45,7 +45,7 @@ export function parseSSEPayload(rawPayload) {
     return { kind: "node_start", value: { node, startMs } };
   }
 
-  if (payload.startsWith("[NODE_END:")) {
+  if (payload.startsWith("[NODE_END:") && payload.endsWith("]")) {
     return { kind: "node_end", value: payload.slice(10, -1) };
   }
 
