@@ -33,10 +33,51 @@ from pathlib import Path
 # Must run before build_graph is imported so _DEFAULT_DB_PATH picks this up.
 os.environ.setdefault("CHECKPOINT_DB_PATH", "test_agentflow.db")
 
+import json
+
 import pytest
 
 from backend.graph import build_graph
 from backend.rag.ingest import INDEX_ROOT
+from backend.settings import get_settings
+
+
+# --- Auth fixture: shared by every API test ------------------------------
+#
+# The auth layer reads `data/users.json` from `settings.data_dir`. We
+# point that at a tmp_path so tests never touch the real user file,
+# then issue a JWT for the test user. The token is attached to
+# `Authorization: Bearer …` headers so API tests can use it as default
+# headers on the httpx AsyncClient.
+#
+# Phase 9: hoisted from `tests/test_api.py` so all API-touching tests
+# (test_api, test_api_blog, test_api_delete, test_graph::test_sources_in_sse)
+# share one source of truth. Keeping it in conftest avoids the copy-paste
+# drift where one file gets a secret that another doesn't.
+
+@pytest.fixture
+async def auth_headers(tmp_path, monkeypatch):
+    from backend import auth as auth_mod
+    import backend.main as main_mod
+
+    settings = get_settings()
+    monkeypatch.setattr(settings, "data_dir", str(tmp_path))
+    monkeypatch.setattr(settings, "jwt_secret", "test-secret-not-for-prod")
+    # Also patch the module-level settings used by `require_user`'s
+    # `Depends(get_settings)` so it sees the test secret.
+    monkeypatch.setattr(main_mod, "settings", settings, raising=False)
+
+    users_file = tmp_path / "users.json"
+    user = {
+        "tester": {
+            "password_hash": auth_mod.hash_password("test-pw"),
+            "created_at": 0.0,
+        }
+    }
+    users_file.write_text(json.dumps(user), encoding="utf-8")
+
+    token = auth_mod.issue_token(settings, "tester")
+    return {"Authorization": f"Bearer {token}"}
 
 
 _DB_PATH = os.environ.get("CHECKPOINT_DB_PATH", "test_agentflow.db")

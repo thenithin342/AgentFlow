@@ -1,0 +1,119 @@
+# AgentFlow — local development & production-deploy topology.
+#
+# Two services:
+#   - postgres   — durable checkpointer backend (used in prod; optional in dev)
+#   - backend    — the FastAPI app, built from ./Dockerfile
+#
+# Reference: DEPLOYMENT.md section 3.3 "docker-compose topology".
+#
+# This file is intended for BOTH local dev (where you may want
+# postgres alongside SQLite) AND a single-node production deploy
+# (e.g. a small VPS, fly.io, a single Railway service instance).
+# For multi-node production use the Dockerfile directly on a
+# managed-runtime platform (Railway, Fly, Render).
+
+services:
+  # ---------------------------------------------------------------------------
+  # Postgres — checkpointer backend
+  # ---------------------------------------------------------------------------
+  postgres:
+    image: postgres:16-alpine
+    container_name: agentflow-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-agentflow}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme-in-prod}
+      POSTGRES_DB: ${POSTGRES_DB:-agentflow}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      # Bind to localhost only so the dev DB is not exposed on the LAN.
+      # In production the network policy / orchestrator firewall does
+      # the equivalent. Remove the `ports:` block entirely in prod to
+      # let the service stay on the internal docker network.
+      - "127.0.0.1:5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-agentflow} -d ${POSTGRES_DB:-agentflow}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    # Cap memory so a runaway query can't OOM the host. 512MB is plenty
+    # for the dev + small-team usage profile; the checkpointer table is
+    # narrow (thread_id, checkpoint_blob, metadata) so even tens of
+    # thousands of threads fit comfortably.
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          memory: 128M
+
+  # ---------------------------------------------------------------------------
+  # Backend — FastAPI app
+  # ---------------------------------------------------------------------------
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: agentflow-backend
+    restart: unless-stopped
+    # Order matters: backend waits for postgres to be healthy AND for
+    # the port to actually be open. `depends_on.condition: service_healthy`
+    # is the only block-scoped healthcheck-gate that docker-compose
+    # supports natively.
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      # --- Required at runtime ---
+      GROQ_API_KEY: ${GROQ_API_KEY:?GROQ_API_KEY is required}
+      TAVILY_API_KEY: ${TAVILY_API_KEY:?TAVILY_API_KEY is required}
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET must be set to a 32+ byte secret in production}
+      # --- Database ---
+      POSTGRES_CONN_STRING: postgresql://${POSTGRES_USER:-agentflow}:${POSTGRES_PASSWORD:-changeme-in-prod}@postgres:5432/${POSTGRES_DB:-agentflow}
+      CHECKPOINT_DB_PATH: /app/agentflow.db  # fallback when POSTGRES_CONN_STRING is unset
+      # --- Persistence dirs (mounted as volumes so the image can stay
+      #     stateless and the data survives container restarts) ---
+      DATA_DIR: /app/data
+      FAISS_INDEX_DIR: /app/faiss_indexes
+      LTM_INDEX_DIR: /app/ltm_indexes
+      # --- Optional: LangSmith tracing ---
+      LANGSMITH_API_KEY: ${LANGSMITH_API_KEY:-}
+      LANGSMITH_TRACING: ${LANGSMITH_TRACING:-false}
+      LANGSMITH_PROJECT: ${LANGSMITH_PROJECT:-AgentFlow}
+      # --- CORS ---
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173,http://localhost:5174}
+      # --- Log level ---
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    volumes:
+      - backend_data:/app/data
+      - backend_faiss:/app/faiss_indexes
+      - backend_ltm:/app/ltm_indexes
+    ports:
+      - "127.0.0.1:8000:8000"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "--max-time", "3", "http://localhost:8000/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s  # Cold-start downloads the sentence-transformer model
+    deploy:
+      resources:
+        limits:
+          # 1.5G is enough for FastAPI + sentence-transformers + a
+          # single Postgres connection pool. Tighten if your platform
+          # has a lower ceiling; the model is ~80MB resident.
+          memory: 1.5G
+        reservations:
+          memory: 512M
+
+volumes:
+  postgres_data:
+    driver: local
+  backend_data:
+    driver: local
+  backend_faiss:
+    driver: local
+  backend_ltm:
+    driver: local

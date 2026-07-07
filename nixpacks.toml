@@ -1,0 +1,26 @@
+# Nixpacks config — only used if Railway is configured for Nixpacks
+# builds (set BUILDER=NIXPACKS in the service's env, or delete this
+# file and rely on `railway.toml` [build] which uses the Dockerfile).
+#
+# This file is the FALLBACK path: it lets you deploy without a
+# Dockerfile, by letting Nixpacks auto-detect Python + install
+# requirements.txt. We don't recommend it in production because
+# Nixpacks will rebuild on every requirements.txt change and won't
+# get the same layer caching as our multi-stage Dockerfile. But it
+# is the path of least resistance for a quick one-off deploy.
+#
+# Provisioner: pin Python 3.12 to match the Dockerfile. Default
+# Nixpacks would pick 3.11 and our pydantic-settings / langgraph
+# 1.x prefer 3.12.
+
+[phases.setup]
+nixPkgs = ["python312", "gcc", "libgomp1"]
+
+[phases.install]
+cmds = [
+  "pip install --upgrade pip wheel",
+  "pip install -r requirements.txt",
+]
+
+[start]
+cmd = "uvicorn backend.main:app --host 0.0.0.0 --port ${PORT:-8000} --workers 1 --timeout-keep-alive 60"

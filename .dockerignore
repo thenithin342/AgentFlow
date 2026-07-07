@@ -1,0 +1,86 @@
+# Build context exclusions for the AgentFlow Docker image.
+#
+# Reference: DEPLOYMENT.md section 3.2 "Build context hygiene".
+# The .dockerignore shrinks the build context from ~200MB (node_modules,
+# venv, faiss_indexes) to ~5MB, which makes `docker build` noticeably
+# faster on the first build AND keeps secrets out of any layer cache
+# that might survive an image push.
+
+# --- VCS / IDE ---
+.git
+.gitignore
+.gitattributes
+.github
+.gitlab-ci.yml
+.idea
+.vscode
+.DS_Store
+Thumbs.db
+
+# --- Python ---
+__pycache__
+**/__pycache__
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+.venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+.coverage.*
+coverage.xml
+*.egg-info/
+build/
+dist/
+
+# --- Node (frontend) ---
+node_modules/
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+
+# --- Runtime data the image will re-create at startup ---
+agentflow.db
+agentflow.db-shm
+agentflow.db-wal
+test_agentflow.db
+test_agentflow.db-shm
+test_agentflow.db-wal
+data/
+faiss_indexes/
+ltm_indexes/
+
+# --- Test fixtures ---
+tests/sample.pdf
+
+# --- Secrets / local config ---
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+secrets/
+
+# --- Docs that bloat the context but aren't needed in the image ---
+# (We still ship README.md so a `docker run <image> --help` style
+# introspection works; everything else is generated locally.)
+docs/
+*.svg.bak
+
+# --- Docker self-reference (prevent recursive context bloat) ---
+Dockerfile.bak
+docker-compose.bak.yml
+.dockerignore.bak
+
+# --- OS / shell scratch ---
+*.swp
+*.swo
+*~
+*.tmp
+*.bak

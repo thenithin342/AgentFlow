@@ -529,7 +529,7 @@ def test_research_runs_synthesizer():
 
 @requires_groq
 @pytest.mark.asyncio
-async def test_sources_in_sse():
+async def test_sources_in_sse(tmp_path, monkeypatch, auth_headers):
     """Phase 2: a research turn's SSE stream must contain a
     `[SOURCES:n]` line with n >= 1 (the research agent harvests URLs
     from Tavily). Uses the real FastAPI lifespan + real graph; gated
@@ -537,7 +537,14 @@ async def test_sources_in_sse():
 
     The existing `tests/test_api.py` only exercises a fake graph; this
     test needs the real one to verify the post-stream `aget_state`
-    branch in main.py emits `[SOURCES:n]`."""
+    branch in main.py emits `[SOURCES:n]`.
+
+    `auth_headers` is the shared fixture in tests/conftest.py (Phase 9
+    hoist) — same path every other API test uses. The auth layer reads
+    `data/users.json` from `settings.data_dir`, so the fixture points
+    that at `tmp_path` and writes a single test user before the call.
+    `tmp_path` and `monkeypatch` are passed through to the conftest
+    fixture's signature so the per-test isolation stays correct."""
     from asgi_lifespan import LifespanManager
     from httpx import ASGITransport, AsyncClient
     from backend.main import app
@@ -547,9 +554,14 @@ async def test_sources_in_sse():
     # `app.state.graph` would never be set and the /chat handler would
     # raise `AttributeError`. `LifespanManager` runs startup/shutdown
     # around the test request so `app.state.graph` is populated.
-    async with LifespanManager(app) as manager:
+    # asgi_lifespan default timeout is 5s; lifespan runs `warm_embeddings`
+    # which downloads + loads all-MiniLM-L6-v2 (~6s on cold cache). Allow
+    # 30s for startup. Subsequent tests reuse the cached model.
+    async with LifespanManager(app, startup_timeout=30, shutdown_timeout=30) as manager:
         transport = ASGITransport(app=manager.app)
-        async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        async with AsyncClient(
+            transport=transport, base_url="http://test", headers=auth_headers
+        ) as ac:
             r = await ac.post(
                 "/chat",
                 json={"thread_id": thread_id, "message": "What is the capital of France?"},

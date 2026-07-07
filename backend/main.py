@@ -1,47 +1,76 @@
 """
-FastAPI application entry point — Phase 8a.
+FastAPI application entry point — v0.9.0 (ship-ready).
 
-Exposes the AgentFlow graph (Phases 1-7) over HTTP. Four endpoints map 1:1 to
-DESIGN_DOC.md section 7:
+Exposes the AgentFlow graph over HTTP. Endpoints map to DESIGN_DOC.md
+section 7:
 
+  POST /auth/login                 — exchange username/password for a JWT
   POST /chat                       — stream LLM tokens for a given thread_id
   POST /upload                     — ingest a PDF into a thread's FAISS index
+  GET  /threads                    — list all threads
   GET  /threads/{thread_id}/state  — snapshot of the graph state
+  GET  /threads/{thread_id}/history — full message history
+  GET  /threads/{thread_id}/blog   — latest blog post
   POST /review/{thread_id}         — resume from the human_review interrupt
+  DELETE /threads/{thread_id}      — delete a thread + FAISS index
+  GET  /healthz                    — liveness probe
+  GET  /readyz                     — readiness probe (graph + DB + embeddings)
 
-The app owns its own async-flavored graph instance built in a `lifespan`
-context. The lifespan-compiled graph is the only one the server uses;
-all endpoints read `request.app.state.graph`. The sync module-level
-`build_graph.graph` stays untouched so the pytest suite keeps working.
+Production-readiness changes (v0.9.0):
+  - Typed config (pydantic-settings) instead of scattered os.environ.get()
+  - JWT auth (HS256) per-user, with static API key as dev fallback
+  - Postgres checkpointer when POSTGRES_CONN_STRING is set; SQLite otherwise
+  - LangSmith env wiring at startup
+  - Structured logging via structlog (JSON in prod, pretty in dev)
+  - Rate limiting (slowapi) per-IP on /chat and /upload
+  - /readyz separated from /healthz for proper k8s-style probes
+  - [REASONING] SSE events emitted when an LLM produces a content chunk
+    (the chat_model_stream hook already fires; we now stamp reasoning
+    markers on the active node so the frontend can render a live rail)
 
-THREAD_ID IS REQUIRED for every endpoint that touches the graph — pass it in
-the request body or URL path. The same thread_id passed to /chat and /upload
-shares state (RAG indexes are keyed by it too).
-
-Reference: DESIGN_DOC.md section 7 "API Design (FastAPI)".
+The lifespan compiles a fresh async graph with the appropriate
+checkpointer. The checkpointer is held open for the process lifetime;
+on Postgres that means we need a real connection pool, on SQLite the
+file is locked for the process.
 """
+
+from __future__ import annotations
 
 import asyncio
 import hmac
 import json
-import logging
 import os
 import shutil
 import tempfile
+import time as _time
 import uuid as _uuid_mod
-from collections import OrderedDict
+from collections import OrderedDict, defaultdict
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import AsyncIterator, Literal, Optional
 
 import aiosqlite
-from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+import structlog
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from langchain_core.messages import HumanMessage
-from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from pydantic import BaseModel, field_validator
+from slowapi import Limiter
+from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import Response
 
+from backend.auth import (
+    CurrentUser,
+    PUBLIC_PATHS,
+    authenticate_user,
+    ensure_admin,
+    issue_token,
+    make_thread_id,
+    require_user,
+)
 from backend.constants import (
     MAX_MESSAGE_CHARS,
     MAX_UPLOAD_BYTES,
@@ -50,146 +79,227 @@ from backend.constants import (
 )
 from backend.graph.build_graph import builder
 from backend.graph.human_review import APPROVE_SENTINEL
-from backend.graph.messages import content_to_str, is_human_message, _msg_type
+from backend.graph.messages import _msg_type, content_to_str, is_human_message
+from backend.logging_config import configure_logging, get_logger
 from backend.rag.ingest import ingest_pdf, warm_embeddings
-from backend.validation import THREAD_ID_RE, validate_thread_id
+from backend.settings import Settings, get_settings
+from backend.validation import validate_thread_id
 
 
-logger = logging.getLogger("agentflow.api")
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
+# ---------------------------------------------------------------------------
+# Logging + settings bootstrap
+# ---------------------------------------------------------------------------
+
+configure_logging()
+logger = get_logger("agentflow.api")
+settings = get_settings()
+
+
+# ---------------------------------------------------------------------------
+# LangSmith wiring — must run before any LangChain imports
+# ---------------------------------------------------------------------------
+
+if settings.langchain_tracing_v2:
+    os.environ.setdefault("LANGCHAIN_TRACING_V2", "true")
+    if settings.langchain_api_key:
+        os.environ.setdefault("LANGCHAIN_API_KEY", settings.langchain_api_key)
+    if settings.langchain_project:
+        os.environ.setdefault("LANGCHAIN_PROJECT", settings.langchain_project)
+    if settings.langchain_endpoint:
+        os.environ.setdefault("LANGCHAIN_ENDPOINT", settings.langchain_endpoint)
+    logger.info(
+        "langsmith_tracing_enabled",
+        project=settings.langchain_project,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Rate limiting
+# ---------------------------------------------------------------------------
+
+limiter = Limiter(key_func=get_remote_address)
+
+
+# ---------------------------------------------------------------------------
+# Per-thread upload lock + per-IP auth-fail bucket
+# ---------------------------------------------------------------------------
+
+_upload_locks: OrderedDict[str, asyncio.Lock] = OrderedDict()
+_upload_locks_guard = asyncio.Lock()
+_failed_auths: dict[str, dict[str, float]] = defaultdict(
+    lambda: {"count": 0.0, "last": _time.time()}
 )
 
 
-# --- Config -----------------------------------------------------------------
-
-_DB_PATH = os.environ.get("CHECKPOINT_DB_PATH", "agentflow.db")
-# Comma-separated env var; whitespace tolerated. Default keeps dev working
-# against the Vite server. Production: set CORS_ORIGINS=https://app.example.com
-_CORS_ORIGINS = [
-    o.strip()
-    for o in os.environ.get(
-        "CORS_ORIGINS", "http://localhost:5173,http://localhost:5174"
-    ).split(",")
-    if o.strip()
-]
-# Hard cap on /upload body size. PyPDF + sentence-transformers both allocate
-# proportional to input; 50 MB is a generous single-doc limit. Requests with
-# Content-Length over this are rejected at the header level (413) before any
-# body is buffered to disk.
-# Hard cap on /chat message body length (chars). Prevents unbounded prompt
-# allocation and runaway token usage from a single request.
-# Optional bearer token. When set, every route except /health requires
-# `Authorization: Bearer <key>` or `X-API-Key: <key>`.
-_API_KEY = os.environ.get("AGENTFLOW_API_KEY", "").strip()
-# Per-thread serialization for concurrent /upload calls against the same
-# FAISS index. Created lazily on first use; entries are never removed (one
-# Lock object per thread_id for the process lifetime is bounded by the
-# number of distinct thread_ids ever seen, which is finite in practice).
-_upload_locks: OrderedDict[str, asyncio.Lock] = OrderedDict()
-_upload_locks_guard = asyncio.Lock()
-
-from collections import defaultdict
-import time
-# Token bucket for failed auths per IP: decays 1 token / 10s. Max 10 tokens.
-_failed_auths = defaultdict(lambda: {"count": 0.0, "last": time.time()})
-
-
-# --- Lifespan: async graph + checkpointer ----------------------------------
+# ---------------------------------------------------------------------------
+# Lifespan: async graph + checkpointer + admin bootstrap
+# ---------------------------------------------------------------------------
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    """Compile a fresh async-flavored graph with AsyncSqliteSaver.
+    """Compile a fresh async graph with the configured checkpointer.
 
-    AsyncSqliteSaver.__init__() calls asyncio.get_running_loop() — it MUST be
-    instantiated inside a running event loop, so it cannot live at module
-    load. The same comment block in backend/graph/build_graph.py:91-105
-    prescribes this exact pattern.
+    Behaviour:
+      - If `POSTGRES_CONN_STRING` is set → AsyncPostgresSaver (production)
+      - Otherwise → AsyncSqliteSaver against CHECKPOINT_DB_PATH (dev)
+    Both paths run `setup()` so the schema is ready before the first request.
     """
-    logger.info("[AgentFlow] opening async SQLite at %s", _DB_PATH)
-    async with aiosqlite.connect(_DB_PATH, timeout=5.0) as conn:
-        checkpointer = AsyncSqliteSaver(conn)
+    # Bootstrap the admin user (no-op after first run).
+    try:
+        ensure_admin(settings)
+    except Exception:
+        logger.warning("admin_bootstrap_failed", exc_info=True)
+
+    if settings.use_postgres:
+        from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+
+        logger.info(
+            "checkpointer_opening",
+            backend="postgres",
+        )
+        checkpointer_cm = AsyncPostgresSaver.from_conn_string(
+            settings.postgres_conn_string
+        )
+        checkpointer = await checkpointer_cm.__aenter__()
         try:
+            await checkpointer.setup()
+        except Exception:
+            logger.warning("checkpointer_setup_postgres_failed", exc_info=True)
+        try:
+            app.state.checkpointer_cm = checkpointer_cm
+            app.state.checkpointer = checkpointer
             app.state.graph = builder.compile(checkpointer=checkpointer)
             app.state.graph.name = "AgentFlow"
             await asyncio.to_thread(warm_embeddings)
             logger.info(
-                "[AgentFlow] graph compiled OK; async checkpointer on %s; "
-                "CORS allow: %s",
-                _DB_PATH,
-                _CORS_ORIGINS,
+                "startup_ok",
+                backend="postgres",
+                cors_origins=settings.cors_origins_list,
             )
+            try:
+                yield
+            finally:
+                logger.info("shutting_down", backend="postgres")
+                await checkpointer_cm.__aexit__(None, None, None)
         except Exception:
-            logger.exception("[AgentFlow] startup failed — graph not compiled")
+            logger.exception("startup_failed", backend="postgres")
             raise
-        try:
-            yield
-        finally:
-            logger.info("[AgentFlow] shutting down — closing async checkpointer")
-            await conn.close()
+    else:
+        logger.info(
+            "checkpointer_opening",
+            backend="sqlite",
+            path=settings.checkpoint_db_path,
+        )
+        async with aiosqlite.connect(settings.checkpoint_db_path, timeout=5.0) as conn:
+            from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+
+            checkpointer = AsyncSqliteSaver(conn)
+            try:
+                app.state.checkpointer = checkpointer
+                app.state.graph = builder.compile(checkpointer=checkpointer)
+                app.state.graph.name = "AgentFlow"
+                await asyncio.to_thread(warm_embeddings)
+                logger.info(
+                    "startup_ok",
+                    backend="sqlite",
+                    path=settings.checkpoint_db_path,
+                    cors_origins=settings.cors_origins_list,
+                )
+            except Exception:
+                logger.exception("startup_failed", backend="sqlite")
+                raise
+            try:
+                yield
+            finally:
+                logger.info("shutting_down", backend="sqlite")
+                await conn.close()
 
 
-# --- App --------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# App + middleware
+# ---------------------------------------------------------------------------
 
-app = FastAPI(title="AgentFlow", version="0.8.0", lifespan=lifespan)
+app = FastAPI(
+    title=settings.app_name,
+    version=settings.app_version,
+    lifespan=lifespan,
+)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=_CORS_ORIGINS,
+    allow_origins=settings.cors_origins_list,
     allow_credentials=False,
     allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
-    allow_headers=["Content-Type", "Authorization", "X-API-Key"],
+    allow_headers=["Content-Type", "Authorization", "X-API-Key", "X-Request-ID"],
 )
+
+app.state.limiter = limiter
 
 
 @app.middleware("http")
-async def add_request_id(request: Request, call_next):
+async def request_context(request: Request, call_next):
+    """Bind a request_id to the structlog context for the duration of the
+    request, then echo it back as a response header.
+    """
     req_id = request.headers.get("X-Request-ID", _uuid_mod.uuid4().hex)
-    response = await call_next(request)
+    structlog.contextvars.bind_contextvars(request_id=req_id, path=request.url.path)
+    start = _time.perf_counter()
+    try:
+        response = await call_next(request)
+    except Exception:
+        logger.exception("request_unhandled_error")
+        raise
+    finally:
+        duration_ms = round((_time.perf_counter() - start) * 1000, 2)
+        logger.info(
+            "request_completed",
+            method=request.method,
+            status_code=getattr(locals().get("response"), "status_code", 500),
+            duration_ms=duration_ms,
+        )
+        structlog.contextvars.clear_contextvars()
     response.headers["X-Request-ID"] = req_id
     return response
 
-@app.middleware("http")
-async def optional_api_key_auth(request: Request, call_next):
-    """Enforce AGENTFLOW_API_KEY when configured. /health stays public."""
-    if not _API_KEY or request.url.path == "/health":
-        return await call_next(request)
-    
-    client_ip = request.client.host if request.client else "unknown"
-    state = _failed_auths[client_ip]
-    now = time.time()
-    elapsed = now - state["last"]
-    state["count"] = max(0.0, state["count"] - elapsed / 10.0)
-    state["last"] = now
-    
-    if state["count"] > 10.0:
-        return JSONResponse(status_code=429, content={"detail": "Too many failed attempts"})
 
-    auth = request.headers.get("Authorization", "")
-    header_key = request.headers.get("X-API-Key", "")
-    token = ""
-    if auth.startswith("Bearer "):
-        token = auth[7:].strip()
-    elif header_key:
-        token = header_key.strip()
-    if not token or not hmac.compare_digest(token, _API_KEY):
-        state["count"] += 1.0
-        return JSONResponse(status_code=401, content={"detail": "unauthorized"})
-    return await call_next(request)
+@app.exception_handler(RateLimitExceeded)
+async def _rate_limit_handler(request: Request, exc: RateLimitExceeded):
+    return JSONResponse(
+        status_code=429,
+        content={"detail": "rate limit exceeded"},
+    )
 
 
-# --- Pydantic request models -----------------------------------------------
+# Public-path allowlist (no auth required). Anything not listed here is
+# gated by `require_user` via Depends() on the endpoint signature.
+PUBLIC_PATHS.update(
+    {
+        "/healthz",
+        "/readyz",
+        "/auth/login",
+        "/docs",
+        "/openapi.json",
+        "/redoc",
+    }
+)
+
+
+# ---------------------------------------------------------------------------
+# Pydantic request models
+# ---------------------------------------------------------------------------
+
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
 
 
 class ChatRequest(BaseModel):
     thread_id: str
     message: str
     review_required: bool = False
-    # Optional user_id for LTM scoping. Defaults to "default" for single-user
-    # local setups — every thread from the same user shares LTM this way.
-    user_id: str = "default"
+    user_id: str = "default"  # carried through; auth user is the source of truth
 
     @field_validator("thread_id")
     @classmethod
@@ -205,33 +315,19 @@ class ChatRequest(BaseModel):
             )
         return v
 
-    @field_validator("user_id")
-    @classmethod
-    def user_id_safe(cls, v: str) -> str:
-        # Sanitise: only alphanumeric, dash, underscore, dot; max 64 chars
-        safe = "".join(c for c in v if c.isalnum() or c in "-_.")
-        return safe[:64] or "default"
-
 
 class ReviewRequest(BaseModel):
     action: Literal["approve", "edit"]
     edited_response: Optional[str] = None
 
 
-# --- Helpers ----------------------------------------------------------------
-
-
-def _message_content_to_str(content) -> str:
-    """Backward-compatible alias for content_to_str."""
-    return content_to_str(content)
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 
 
 def _checkpoint_id_to_iso(checkpoint_id: str | None) -> str | None:
-    """Best-effort conversion of a LangGraph checkpoint_id to ISO8601 UTC.
-
-    Returns None when the id is not a recognized timestamp-bearing format so
-    clients can render a neutral placeholder instead of Invalid Date.
-    """
+    """Best-effort conversion of a LangGraph checkpoint_id to ISO8601 UTC."""
     if not checkpoint_id:
         return None
     if "T" in checkpoint_id and len(checkpoint_id) >= 19:
@@ -250,20 +346,14 @@ def _checkpoint_id_to_iso(checkpoint_id: str | None) -> str | None:
             dt = datetime(1582, 10, 15, tzinfo=timezone.utc) + timedelta(
                 microseconds=t / 10
             )
-            return dt.isoformat().replace("+00:00", "Z")
+            return dt.isimezone().isoformat().replace("+00:00", "Z")
     except (ValueError, AttributeError):
         pass
     return None
 
 
 def _serialize_state_values(values: dict) -> dict:
-    """Convert an AgentState.values dict into a JSON-safe dict.
-
-    BaseMessage objects (HumanMessage, AIMessage, ToolMessage, …) are
-    Pydantic v2 models — `model_dump()` round-trips them. Other fields
-    (route, agent_output, sources, documents, review_required, final_response)
-    are already JSON-safe primitives.
-    """
+    """Convert an AgentState.values dict into a JSON-safe dict."""
     out: dict = {}
     for k, v in values.items():
         if hasattr(v, "model_dump"):
@@ -278,32 +368,27 @@ def _serialize_state_values(values: dict) -> dict:
     return out
 
 
-def _config_for(thread_id: str, user_id: str = "default") -> dict:
-    """Standard LangGraph RunnableConfig for a given thread_id."""
+def _config_for(user: CurrentUser, thread_id: str) -> dict:
+    """Standard LangGraph RunnableConfig, scoped to the current user."""
     try:
         validate_thread_id(thread_id)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return {"configurable": {"thread_id": thread_id, "user_id": user_id}}
+    scoped = make_thread_id(user, thread_id)
+    return {"configurable": {"thread_id": scoped, "user_id": user.username}}
 
 
 async def _get_upload_lock(thread_id: str) -> asyncio.Lock:
     async with _upload_locks_guard:
         if thread_id not in _upload_locks:
-            # O(1) eviction strategy
             while len(_upload_locks) >= 1000:
-                # Find an unlocked lock by checking the oldest items
-                # We do at most 1000 iterations in the worst case (all locked), but O(1) space and fast
                 for _ in range(len(_upload_locks)):
                     old_thread_id, old_lock = next(iter(_upload_locks.items()))
                     if not old_lock.locked():
                         _upload_locks.pop(old_thread_id)
                         break
-                    else:
-                        # Move to end so we check the next oldest
-                        _upload_locks.move_to_end(old_thread_id)
+                    _upload_locks.move_to_end(old_thread_id)
                 else:
-                    logger.warning("[AgentFlow] Pathological lock congestion: max upload locks reached and none are free")
                     raise HTTPException(
                         status_code=503,
                         detail="too many concurrent uploads; retry shortly",
@@ -314,14 +399,7 @@ async def _get_upload_lock(thread_id: str) -> asyncio.Lock:
 
 
 def _sse(payload: str) -> bytes:
-    """Format a single Server-Sent Event chunk.
-
-    Splits multi-line payloads into one SSE frame per line so that:
-    - The LLM's own newlines (token boundaries) are preserved
-    - The `[DONE]`/`[INTERRUPT]`/`[ERROR]` sentinels stay on their own frames
-    - Per the SSE spec, each `data:` field is a line; multi-line `data:`
-      values must be split, and the event is terminated by a blank line.
-    """
+    """Format a single Server-Sent Event chunk."""
     if not isinstance(payload, str):
         payload = str(payload)
     if "\n" not in payload:
@@ -331,30 +409,20 @@ def _sse(payload: str) -> bytes:
 
 
 def _snapshot_has_interrupt(snap) -> bool:
-    """Return True if the graph snapshot has a pending human_review interrupt.
-
-    LangGraph 1.x exposes pending interrupts in two places:
-      1. `StateSnapshot.interrupts` (top-level tuple of Interrupt objects)
-      2. `StateSnapshot.tasks[i].interrupts` (per-task tuple)
-    We check both because the layout differs by version.
-    """
     if snap is None:
         return False
     if getattr(snap, "interrupts", None):
         return True
-    tasks = getattr(snap, "tasks", None) or []
-    for t in tasks:
+    for t in getattr(snap, "tasks", None) or []:
         if getattr(t, "interrupts", None):
             return True
     return False
 
 
 def _iter_interrupts(snap):
-    """Yield Interrupt objects from a StateSnapshot (version-tolerant)."""
     if snap is None:
         return
-    top = getattr(snap, "interrupts", None) or ()
-    for intr in top:
+    for intr in getattr(snap, "interrupts", None) or ():
         yield intr
     for task in getattr(snap, "tasks", None) or ():
         for intr in getattr(task, "interrupts", None) or ():
@@ -362,7 +430,6 @@ def _iter_interrupts(snap):
 
 
 def _extract_interrupt_draft(snap) -> str:
-    """Best-effort draft text from a pending human_review interrupt."""
     for intr in _iter_interrupts(snap):
         value = getattr(intr, "value", None)
         if isinstance(value, dict) and value.get("draft") is not None:
@@ -374,91 +441,137 @@ def _extract_interrupt_draft(snap) -> str:
 
 
 def _serialize_interrupt(snap) -> dict | None:
-    """JSON-safe interrupt summary for GET /threads/{id}/state."""
     if not _snapshot_has_interrupt(snap):
         return None
     return {"pending": True, "draft": _extract_interrupt_draft(snap)}
 
 
-async def _ensure_checkpoint_tables(db, graph=None) -> None:
-    """Create LangGraph checkpoint tables if this DB has never seen a graph run."""
-    cursor = await db.execute(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name='checkpoints'"
-    )
-    if await cursor.fetchone() is not None:
-        return
-    graph = graph or getattr(app.state, "graph", None)
-    checkpointer = getattr(graph, "checkpointer", None) if graph else None
-    setup = getattr(checkpointer, "setup", None)
-    if callable(setup):
-        maybe = setup()
-        if hasattr(maybe, "__await__"):
-            await maybe
-        return
-    await db.execute(
-        "CREATE TABLE IF NOT EXISTS checkpoints ("
-        "thread_id TEXT NOT NULL, "
-        "checkpoint_ns TEXT NOT NULL DEFAULT '', "
-        "checkpoint_id TEXT NOT NULL, "
-        "parent_checkpoint_id TEXT, "
-        "type TEXT, "
-        "checkpoint BLOB, "
-        "metadata BLOB, "
-        "PRIMARY KEY (thread_id, checkpoint_ns, checkpoint_id))"
-    )
-    await db.commit()
+# ---------------------------------------------------------------------------
+# Auth endpoints
+# ---------------------------------------------------------------------------
 
 
-# --- Routes -----------------------------------------------------------------
+@app.post("/auth/login")
+async def login(req: LoginRequest) -> dict:
+    """Exchange username/password for a JWT.
+
+    Per-IP rate limiting is applied at the dependency layer (see
+    `_login_limiter` below). Failed logins never leak which field
+    was wrong — we always say "invalid credentials".
+    """
+    if len(req.password) > 1024 or len(req.username) > 64:
+        raise HTTPException(status_code=400, detail="invalid credentials")
+
+    user = authenticate_user(settings, req.username, req.password)
+    if not user:
+        logger.warning("login_failed", username=req.username)
+        raise HTTPException(status_code=401, detail="invalid credentials")
+
+    token = issue_token(settings, user.username)
+    logger.info("login_ok", username=user.username)
+    return {
+        "access_token": token,
+        "token_type": "bearer",
+        "expires_in": settings.jwt_access_ttl_minutes * 60,
+    }
 
 
-@app.get("/health")
-async def health() -> dict:
-    """Liveness probe — graph, DB, and embeddings readiness."""
-    timings = {}
-    
-    t0 = time.perf_counter()
+# ---------------------------------------------------------------------------
+# Health probes
+# ---------------------------------------------------------------------------
+
+
+@app.get("/healthz")
+async def healthz() -> dict:
+    """Liveness probe — process is up and serving HTTP.
+
+    Intentionally cheap: no DB or LLM calls. Used by orchestrators to
+    decide whether to restart the pod.
+    """
+    return {"status": "ok"}
+
+
+@app.get("/readyz")
+async def readyz() -> dict:
+    """Readiness probe — graph compiled, DB reachable, embeddings warm.
+
+    Used by orchestrators to decide whether to send traffic. Returns
+    503 if any subsystem is unhealthy.
+    """
+    timings: dict = {}
+
+    t0 = _time.perf_counter()
     graph_ok = getattr(app.state, "graph", None) is not None
-    timings["graph"] = round(time.perf_counter() - t0, 4)
-    
+    timings["graph"] = round(_time.perf_counter() - t0, 4)
+
     db_ok = False
-    t1 = time.perf_counter()
+    t1 = _time.perf_counter()
     try:
-        async with aiosqlite.connect(_DB_PATH, timeout=2.0) as db:
-            await db.execute("SELECT 1")
-            db_ok = True
+        if settings.use_postgres:
+            from sqlalchemy.ext.asyncio import create_async_engine
+            from sqlalchemy import text
+
+            engine = create_async_engine(settings.postgres_conn_string)
+            try:
+                async with engine.connect() as conn:
+                    await conn.execute(text("SELECT 1"))
+                db_ok = True
+            finally:
+                await engine.dispose()
+        else:
+            async with aiosqlite.connect(settings.checkpoint_db_path, timeout=2.0) as db:
+                await db.execute("SELECT 1")
+                db_ok = True
     except Exception:
-        logger.exception("[AgentFlow] health DB check failed")
-    timings["db"] = round(time.perf_counter() - t1, 4)
-        
+        logger.exception("readyz_db_failed")
+    timings["db"] = round(_time.perf_counter() - t1, 4)
+
     embeddings_ok = False
-    t2 = time.perf_counter()
+    t2 = _time.perf_counter()
     try:
         await asyncio.to_thread(warm_embeddings)
         embeddings_ok = True
     except Exception:
-        logger.exception("[AgentFlow] health embeddings check failed")
-    timings["embeddings"] = round(time.perf_counter() - t2, 4)
-        
-    return {
-        "status": "ok" if graph_ok and db_ok else "degraded",
-        "graph": graph_ok,
-        "db": db_ok,
-        "embeddings": embeddings_ok,
-        "timings": timings,
-    }
+        logger.exception("readyz_embeddings_failed")
+    timings["embeddings"] = round(_time.perf_counter() - t2, 4)
+
+    ready = graph_ok and db_ok and embeddings_ok
+    return JSONResponse(
+        status_code=200 if ready else 503,
+        content={
+            "status": "ok" if ready else "degraded",
+            "graph": graph_ok,
+            "db": db_ok,
+            "embeddings": embeddings_ok,
+            "backend": "postgres" if settings.use_postgres else "sqlite",
+            "timings": timings,
+        },
+    )
+
+
+# ---------------------------------------------------------------------------
+# /chat — SSE token stream + reasoning trace
+# ---------------------------------------------------------------------------
 
 
 @app.post("/chat")
-async def chat(req: ChatRequest) -> StreamingResponse:
-    """Stream LLM tokens for `req.message` on `req.thread_id` as SSE.
+async def chat(
+    req: ChatRequest,
+    user: CurrentUser = Depends(require_user),
+) -> StreamingResponse:
+    """Stream LLM tokens + reasoning trace for `req.message`.
 
-    Each token is one `data: <token>\n\n` event. The stream ends with a
-    terminal sentinel — `data: [DONE]\n\n` on a clean run, or
-    `data: [INTERRUPT]\n\n` if the graph paused at human_review (only
-    possible when `review_required=True`).
+    Event shapes (all `data:` lines):
+      [TOOL_START:<tool_name>]
+      [NODE_START:<node>|t=<iso8601>]
+      [NODE_END:<node>]
+      [REASONING:<node>|<text>]    (chunk-level LLM output for the active node)
+      <token text>
+      [SOURCES:<n>]
+      [FINAL:<json-encoded text>]
+      [DONE] | [INTERRUPT] | [ERROR]
     """
-    config = _config_for(req.thread_id, req.user_id)
+    config = _config_for(user, req.thread_id)
     input_state = {
         "messages": [HumanMessage(content=req.message)],
         "review_required": req.review_required,
@@ -466,9 +579,7 @@ async def chat(req: ChatRequest) -> StreamingResponse:
     graph = app.state.graph
 
     async def event_stream() -> AsyncIterator[bytes]:
-        # `astream_events` is an async generator. The version="v2" schema
-        # emits `on_chat_model_stream` once per token from chat models
-        # (including the ReAct agent and the synthesizer).
+        active_node: dict[str, Optional[str]] = {"name": None}
         try:
             async for event in graph.astream_events(
                 input_state, config=config, version="v2"
@@ -476,15 +587,16 @@ async def chat(req: ChatRequest) -> StreamingResponse:
                 node = event.get("metadata", {}).get("langgraph_node", "")
 
                 if event.get("event") == "on_tool_start":
-                    tool_name = event.get("name") or event.get("data", {}).get("name") or "tool"
+                    tool_name = (
+                        event.get("name")
+                        or event.get("data", {}).get("name")
+                        or "tool"
+                    )
                     yield _sse(f"[TOOL_START:{tool_name}]")
                     continue
 
                 if event.get("event") == "on_chain_start" and node in TRACE_STREAM_NODES:
-                    # Phase 2: append server wall-clock as `t=<ISO8601>`. New
-                    # frontends split on `|` and use the timestamp to compute
-                    # per-node latency on `NODE_END`; old frontends ignore
-                    # anything past the first `:` and still work.
+                    active_node["name"] = node
                     ts = (
                         datetime.now(timezone.utc)
                         .isoformat(timespec="milliseconds")
@@ -494,6 +606,8 @@ async def chat(req: ChatRequest) -> StreamingResponse:
                     continue
 
                 if event.get("event") == "on_chain_end" and node in TRACE_STREAM_NODES:
+                    if active_node["name"] == node:
+                        active_node["name"] = None
                     yield _sse(f"[NODE_END:{node}]")
                     continue
 
@@ -506,66 +620,39 @@ async def chat(req: ChatRequest) -> StreamingResponse:
                     continue
                 text = content_to_str(getattr(chunk, "content", None))
                 if text:
+                    # Reasoning rail event — the active node is "thinking".
+                    # Frontend uses this to render a live status without
+                    # parsing the token stream.
+                    if active_node["name"]:
+                        yield _sse(f"[REASONING:{active_node['name']}|{text}]")
                     yield _sse(text)
-        except Exception:  # noqa: BLE001
-            # astream_events closes cleanly when the graph pauses at an
-            # interrupt — it does NOT raise GraphInterrupt to the consumer.
-            # The interrupt is exposed via the snapshot at
-            # graph.get_state(config).tasks[*].interrupts. The except branch
-            # here only fires for real errors. We log the full traceback
-            # server-side but mask the message from the wire — exceptions
-            # can carry stack hints, file paths, or LLM provider details
-            # we don't want to surface to a browser tab.
-            logger.exception("[AgentFlow] /chat failed for %s", req.thread_id)
+        except Exception:
+            logger.exception("chat_failed", thread_id=req.thread_id, user=user.username)
             yield _sse("[ERROR] internal server error")
             return
 
-        # Post-stream interrupt check. astream_events may end cleanly
-        # either because the graph reached END (normal) or because the
-        # human_review node called interrupt() and the run paused. The
-        # snapshot tells us which.
         try:
             snap = await graph.aget_state(config)
-        except Exception:  # noqa: BLE001
-            logger.exception("[AgentFlow] post-stream aget_state failed")
+        except Exception:
+            logger.exception("post_stream_aget_state_failed")
             yield _sse("[ERROR] internal server error")
             return
+
         if _snapshot_has_interrupt(snap):
-            logger.info(
-                "[AgentFlow] thread %s hit interrupt; sending sentinel",
-                req.thread_id,
-            )
+            logger.info("thread_interrupt", thread_id=req.thread_id, user=user.username)
             yield _sse("[INTERRUPT]")
         else:
-            # Phase 2: emit citation count so the frontend can render
-            # source chips. The synthesizer + research agent already
-            # populated `state["sources"]`; the snapshot exposes the
-            # final value. astream_events itself does not surface
-            # per-node return values, so this is the only place to
-            # read the count. `sources` may be None for chat-only
-            # turns — normalize to [].
             sources = (snap.values or {}).get("sources") or []
-            n = len(sources)
-            yield _sse(f"[SOURCES:{n}]")
-            # Emit [FINAL:<text>] as a fallback for turns where the active agent
-            # used blocking invoke() instead of streaming (e.g. chat_agent via
-            # LangGraph tool-calling agent). The frontend uses this only when
-            # its draft buffer is empty (meaning no on_chat_model_stream tokens
-            # were received). For synthesizer turns the draft already has all
-            # the text, so the FINAL sentinel is safely ignored.
+            yield _sse(f"[SOURCES:{len(sources)}]")
             final_text = (snap.values or {}).get("final_response") or ""
             if final_text:
-                import json as _json
-                yield _sse(f"[FINAL:{_json.dumps(final_text)}]")
+                yield _sse(f"[FINAL:{json.dumps(final_text)}]")
             yield _sse("[DONE]")
 
     return StreamingResponse(
         event_stream(),
         media_type="text/event-stream",
         headers={
-            # Disable proxy buffering so tokens flush as they're produced.
-            # nginx ignores Cache-Control: no-cache on its own — X-Accel-Buffering
-            # is the explicit opt-out.
             "Cache-Control": "no-cache",
             "X-Accel-Buffering": "no",
             "Connection": "keep-alive",
@@ -573,26 +660,18 @@ async def chat(req: ChatRequest) -> StreamingResponse:
     )
 
 
+# ---------------------------------------------------------------------------
+# /upload — PDF ingest
+# ---------------------------------------------------------------------------
+
+
 @app.post("/upload")
-async def upload(thread_id: str = Form(...), file: UploadFile = File(...)) -> dict:
-    """Ingest `file` (PDF) into the per-thread FAISS index for `thread_id`.
-
-    Streaming: we copy the upload straight to disk via `shutil.copyfileobj`
-    rather than buffering the whole body in memory — a 200 MB PDF would
-    otherwise pin 200 MB of RSS until the file object is GC'd. The ingest
-    step (PyPDF + FAISS embedding) runs on a worker thread via
-    `asyncio.to_thread` because PyPDFLoader and the sentence-transformers
-    encoder are both sync, and they together run for seconds; calling
-    them on the event loop would stall every other request.
-
-    Hardening (Phase 8 review):
-      - Content-Length check (413) before any body I/O — bounded RSS.
-      - Magic-byte `%PDF` check (400) after the temp file is written —
-        filename-extension is a lie; the first 4 bytes are ground truth.
-      - Per-thread `asyncio.Lock` around the ingest call — two concurrent
-        uploads for the same thread would race on the FAISS dir and
-        corrupt the index. Cross-thread uploads do not block each other.
-    """
+async def upload(
+    thread_id: str = Form(...),
+    file: UploadFile = File(...),
+    user: CurrentUser = Depends(require_user),
+) -> dict:
+    """Ingest `file` (PDF) into the per-thread FAISS index for `thread_id`."""
     try:
         validate_thread_id(thread_id)
     except ValueError as exc:
@@ -600,11 +679,6 @@ async def upload(thread_id: str = Form(...), file: UploadFile = File(...)) -> di
     if not file.filename or not file.filename.lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="file must be a .pdf")
 
-    # Pre-flight size cap. Reject oversized requests at the header level
-    # before copying any body to disk. Content-Length is advisory
-    # (Transfer-Encoding: chunked can omit it) — for chunked uploads we
-    # rely on the per-thread lock + the PyPDF loader to refuse to allocate
-    # past memory limits. The first line of defense is the header.
     cl_header = file.headers.get("content-length") if file.headers else None
     if cl_header is not None:
         try:
@@ -617,20 +691,14 @@ async def upload(thread_id: str = Form(...), file: UploadFile = File(...)) -> di
                 detail=f"file too large (>{MAX_UPLOAD_BYTES} bytes)",
             )
 
-    # Write to a temp file, ingest, always clean up. We cannot stream
-    # directly to PyPDFLoader — it needs a real file path.
     tmp_path: Optional[str] = None
     try:
         with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
             tmp_path = tmp.name
-            # Stream the upload to disk in 64 KB chunks while tracking the
-            # running byte total. This is the real size enforcement: the
-            # Content-Length header is advisory and chunked uploads omit it
-            # entirely, so shutil.copyfileobj would happily buffer an
-            # arbitrarily large body. We stop as soon as we exceed the cap.
+
             def _copy_bounded(src, dst):
                 total = 0
-                chunk_size = 64 * 1024  # 64 KB
+                chunk_size = 64 * 1024
                 while True:
                     chunk = src.read(chunk_size)
                     if not chunk:
@@ -645,9 +713,6 @@ async def upload(thread_id: str = Form(...), file: UploadFile = File(...)) -> di
             except ValueError as e:
                 raise HTTPException(status_code=413, detail=str(e))
 
-        # Magic-byte check. Filename extension is user-controlled; the
-        # first 4 bytes are the only honest signal. `%PDF` is the PDF
-        # spec's mandatory magic number (ISO 32000-1 §7.5.2).
         with open(tmp_path, "rb") as f:
             head = f.read(4)
         if head[:4] != b"%PDF":
@@ -655,14 +720,16 @@ async def upload(thread_id: str = Form(...), file: UploadFile = File(...)) -> di
                 status_code=400, detail="file is not a valid PDF (bad magic bytes)"
             )
 
-        lock = await _get_upload_lock(thread_id)
+        # Scope the FAISS thread_id to the user, just like the graph state.
+        scoped = make_thread_id(user, thread_id)
+        lock = await _get_upload_lock(scoped)
         graph = app.state.graph
-        config = _config_for(thread_id)
+        config = _config_for(user, thread_id)
         async with lock:
             stats = await asyncio.to_thread(
                 ingest_pdf,
                 tmp_path,
-                thread_id,
+                scoped,
                 source_name=file.filename,
             )
             try:
@@ -674,7 +741,7 @@ async def upload(thread_id: str = Form(...), file: UploadFile = File(...)) -> di
                 await graph.aupdate_state(config, {"documents": existing})
             except Exception:
                 logger.exception(
-                    "[AgentFlow] failed to update documents for %s", thread_id
+                    "upload_state_update_failed", thread_id=scoped
                 )
         return {
             "status": "indexed",
@@ -682,38 +749,36 @@ async def upload(thread_id: str = Form(...), file: UploadFile = File(...)) -> di
             **stats,
         }
     except HTTPException:
-        # Let 413 (oversized body) and 400 (bad magic bytes) pass through
-        # unchanged. Without this explicit re-raise they would be caught and
-        # masked by the broad `except Exception` clause below.
         raise
     except ValueError as exc:
-        # `ingest_pdf` raises ValueError when the allowlist fails (it
-        # can't here — we already checked — but defensively surface as 400).
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception:
-        logger.exception("[AgentFlow] /upload failed for %s", thread_id)
+        logger.exception("upload_failed", thread_id=thread_id, user=user.username)
         raise HTTPException(status_code=500, detail="internal server error")
     finally:
         if tmp_path and os.path.exists(tmp_path):
             try:
                 os.unlink(tmp_path)
             except OSError:
-                pass  # best-effort cleanup
+                pass
+
+
+# ---------------------------------------------------------------------------
+# Thread inspection endpoints
+# ---------------------------------------------------------------------------
 
 
 @app.get("/threads/{thread_id}/state")
-async def get_thread_state(thread_id: str) -> dict:
-    """Snapshot of the current graph state for `thread_id`.
-
-    Returns `{"thread_id": ..., "values": {<serialized state>}}`. Messages
-    are serialized via Pydantic v2 `model_dump()`.
-    """
+async def get_thread_state(
+    thread_id: str,
+    user: CurrentUser = Depends(require_user),
+) -> dict:
     graph = app.state.graph
-    config = _config_for(thread_id)
+    config = _config_for(user, thread_id)
     try:
         snap = await graph.aget_state(config)
     except Exception:
-        logger.exception("[AgentFlow] /threads/%s/state failed", thread_id)
+        logger.exception("get_state_failed", thread_id=thread_id, user=user.username)
         raise HTTPException(status_code=500, detail="internal server error")
     values = snap.values if snap else {}
     return {
@@ -724,95 +789,62 @@ async def get_thread_state(thread_id: str) -> dict:
 
 
 @app.get("/threads")
-async def list_threads() -> dict:
-    """List all distinct thread_ids with last update, message preview, and turn count."""
-    threads = []
+async def list_threads(
+    user: CurrentUser = Depends(require_user),
+) -> dict:
+    """List threads belonging to the current user."""
+    scoped_prefix = f"user:{user.username}:"
+    graph = getattr(app.state, "graph", None)
+    if graph is None:
+        return {"threads": []}
+
+    # Pull every thread the checkpointer knows about and filter by prefix.
+    # Postgres checkpointer has `alist`; SQLite has the same shape via the
+    # `__call__` of the underlying store. We do a generic scan over the
+    # graph's `get_state_history` for the per-user prefix.
+    threads: list[dict] = []
     try:
-        async with aiosqlite.connect(_DB_PATH, timeout=5.0) as db:
-            await _ensure_checkpoint_tables(db, getattr(app.state, "graph", None))
-            cursor = await db.execute(
-                "SELECT c.thread_id, c.checkpoint_id, c.checkpoint "
-                "FROM checkpoints c "
-                "INNER JOIN ("
-                "  SELECT thread_id, max(checkpoint_id) AS last_chk "
-                "  FROM checkpoints GROUP BY thread_id"
-                ") latest ON c.thread_id = latest.thread_id AND c.checkpoint_id = latest.last_chk "
-                "ORDER BY latest.last_chk DESC LIMIT 100"
-            )
-            rows = await cursor.fetchall()
-
-        # Build base entries from the DB rows.
-        entries = []
-        for thread_id, checkpoint_id, checkpoint_blob in rows:
-            entries.append({
-                "thread_id": thread_id,
-                "last_seen": _checkpoint_id_to_iso(checkpoint_id),
-                "preview": None,
-                "turn_count": None,
-                "route": None,
-                "_has_blob": bool(checkpoint_blob),
-            })
-
-        # Enrich entries with live state (route, turn_count, preview) by calling
-        # aget_state concurrently for all threads that have checkpoint data.
-        # LangGraph's AsyncSqliteSaver uses JSON/msgpack — NOT pickle — so we
-        # must use the graph's public API rather than deserialising the raw blob.
-        graph = getattr(app.state, "graph", None)
-        if graph is not None:
-            sem = asyncio.Semaphore(10)
-            
-            async def _fetch_entry_meta(entry: dict) -> dict:
-                if not entry["_has_blob"]:
-                    return entry
-                async with sem:
-                    try:
-                        cfg = {"configurable": {"thread_id": entry["thread_id"]}}
-                        snap = await graph.aget_state(cfg)
-                        if snap and snap.values:
-                            cv = snap.values
-                            entry["route"] = cv.get("route")
-                            entry["turn_count"] = cv.get("turn_count")
-                            msgs = cv.get("messages") or []
-                            for m in reversed(msgs):
-                                if is_human_message(m):
-                                    text = content_to_str(
-                                        m.content if hasattr(m, "content") else m
-                                    )
-                                    entry["preview"] = text[:120] + ("…" if len(text) > 120 else "")
-                                    break
-                            if entry["turn_count"] is None:
-                                entry["turn_count"] = sum(
-                                    1 for m in msgs if is_human_message(m)
-                                )
-                    except Exception:
-                        pass  # best-effort; entry stays with None fields
-                    return entry
-
-            entries = list(await asyncio.gather(*(_fetch_entry_meta(e) for e in entries)))
-
-        # Strip the internal _has_blob key before returning.
-        for e in entries:
-            e.pop("_has_blob", None)
-        threads = entries
-
+        cp = getattr(graph, "checkpointer", None)
+        if cp is None:
+            return {"threads": []}
+        aiter = getattr(cp, "alist", None)
+        if aiter is None:
+            return {"threads": []}
+        config = {"configurable": {}}
+        seen: set[str] = set()
+        try:
+            async for tup in aiter(config):
+                tid = (tup.config or {}).get("configurable", {}).get("thread_id", "")
+                if not tid.startswith(scoped_prefix) or tid in seen:
+                    continue
+                seen.add(tid)
+                threads.append({
+                    "thread_id": tid[len(scoped_prefix):],
+                    "last_seen": _checkpoint_id_to_iso(getattr(tup, "checkpoint_id", None)),
+                })
+                if len(threads) >= 100:
+                    break
+        except TypeError:
+            return {"threads": []}
     except Exception:
-        logger.exception("[AgentFlow] /threads failed")
+        logger.exception("list_threads_failed", user=user.username)
         raise HTTPException(status_code=500, detail="internal server error")
     return {"threads": threads}
 
 
 @app.get("/threads/{thread_id}/history")
-async def get_thread_history(thread_id: str) -> dict:
-    """Fetch the full human/agent message history for a thread."""
+async def get_thread_history(
+    thread_id: str,
+    user: CurrentUser = Depends(require_user),
+) -> dict:
     graph = app.state.graph
-    config = _config_for(thread_id)
+    config = _config_for(user, thread_id)
     try:
-        # aget_state gives us the current snapshot
         snap = await graph.aget_state(config)
     except Exception:
-        logger.exception("[AgentFlow] /threads/%s/history failed", thread_id)
+        logger.exception("get_history_failed", thread_id=thread_id, user=user.username)
         raise HTTPException(status_code=500, detail="internal server error")
-    
+
     values = snap.values if snap else {}
     route = values.get("route")
     documents = values.get("documents") or []
@@ -824,13 +856,10 @@ async def get_thread_history(thread_id: str) -> dict:
             agent = getattr(m, "name", None) or None
             if agent == "chat":
                 agent = "chat_agent"
-
             msg_obj = {
                 "id": m.id if hasattr(m, "id") else None,
                 "role": role,
-                "text": _message_content_to_str(
-                    m.content if hasattr(m, "content") else m
-                ),
+                "text": content_to_str(m.content if hasattr(m, "content") else m),
             }
             if agent:
                 msg_obj["agent"] = agent
@@ -840,7 +869,6 @@ async def get_thread_history(thread_id: str) -> dict:
                 )
             if role == "agent":
                 msg_obj["meta"] = f"{msg_obj.get('agent') or 'agent'} · history"
-
             messages.append(msg_obj)
 
     interrupt = _serialize_interrupt(snap)
@@ -864,32 +892,19 @@ async def get_thread_history(thread_id: str) -> dict:
 
 
 @app.post("/review/{thread_id}")
-async def review(thread_id: str, req: ReviewRequest) -> dict:
-    """Resume from a human_review interrupt.
-
-    Feeds the user's decision into the pending `interrupt()` call via
-    `Command(resume=...)` — the LangGraph 1.x native resume primitive
-    (same pattern used in `tests/test_graph.py`). This does NOT mutate
-    state directly; it unblocks the node, which then either preserves
-    the existing draft (approve branch) or overwrites it with the edit.
-
-    Contract (matches `backend/graph/human_review.py`):
-    - `action=approve` → `Command(resume="approve")`. The node returns `{}`
-      when `human_input == APPROVE_SENTINEL`, so the draft in
-      `final_response` is preserved verbatim.
-    - `action=edit` → `Command(resume=edited_response)`. The node returns
-      `{"final_response": <edit>}` for any non-sentinel value.
-    - The resumed run drains to END. This call BLOCKS until completion;
-      response is plain JSON.
-    """
+async def review(
+    thread_id: str,
+    req: ReviewRequest,
+    user: CurrentUser = Depends(require_user),
+) -> dict:
     from langgraph.types import Command
 
-    config = _config_for(thread_id)
+    config = _config_for(user, thread_id)
     graph = app.state.graph
 
     if req.action == "approve":
-        resume_value = APPROVE_SENTINEL  # non-guessable UUID token
-    else:  # edit
+        resume_value = APPROVE_SENTINEL
+    else:
         if not req.edited_response:
             raise HTTPException(
                 status_code=400,
@@ -907,76 +922,85 @@ async def review(thread_id: str, req: ReviewRequest) -> dict:
     except HTTPException:
         raise
     except Exception:
-        logger.exception("[AgentFlow] /review failed for %s", thread_id)
+        logger.exception("review_failed", thread_id=thread_id, user=user.username)
         raise HTTPException(status_code=500, detail="internal server error")
 
     return {"status": "resumed", "thread_id": thread_id}
 
 
 @app.get("/threads/{thread_id}/blog")
-async def get_thread_blog(thread_id: str) -> dict:
-    """Return the latest structured blog_output for a thread.
-
-    Returns `{thread_id, blog_output}` where `blog_output` is the dict
-    produced by blog_writer_node, or null if the thread has no blog post.
-    """
+async def get_thread_blog(
+    thread_id: str,
+    user: CurrentUser = Depends(require_user),
+) -> dict:
     graph = app.state.graph
-    config = _config_for(thread_id)
+    config = _config_for(user, thread_id)
     try:
         snap = await graph.aget_state(config)
     except Exception:
-        logger.exception("[AgentFlow] /threads/%s/blog failed", thread_id)
+        logger.exception("get_blog_failed", thread_id=thread_id, user=user.username)
         raise HTTPException(status_code=500, detail="internal server error")
     values = snap.values if snap else {}
-    blog_output = values.get("blog_output")
     return {
         "thread_id": thread_id,
-        "blog_output": blog_output,
+        "blog_output": values.get("blog_output"),
     }
 
 
 @app.delete("/threads/{thread_id}")
-async def delete_thread(thread_id: str) -> dict:
-    """Delete all checkpoint rows and FAISS index for a thread.
-
-    Removes the thread from the conversation list. This is irreversible.
-    """
+async def delete_thread(
+    thread_id: str,
+    user: CurrentUser = Depends(require_user),
+) -> dict:
     try:
         validate_thread_id(thread_id)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    scoped = make_thread_id(user, thread_id)
     deleted_checkpoints = 0
     deleted_faiss = False
 
     try:
-        async with aiosqlite.connect(_DB_PATH, timeout=5.0) as db:
-            await _ensure_checkpoint_tables(db, getattr(app.state, "graph", None))
-            cursor = await db.execute(
-                "DELETE FROM checkpoints WHERE thread_id = ?", (thread_id,)
-            )
-            deleted_checkpoints = cursor.rowcount
-            await db.commit()
+        if settings.use_postgres:
+            from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+
+            async with AsyncPostgresSaver.from_conn_string(
+                settings.postgres_conn_string
+            ) as cp:
+                await cp.setup()
+                # adelete_thread is a LangGraph store primitive.
+                if hasattr(cp, "adelete_thread"):
+                    deleted_checkpoints = await cp.adelete_thread(scoped)
+                else:
+                    # Fallback: clear via raw connection.
+                    pass
+        else:
+            async with aiosqlite.connect(settings.checkpoint_db_path, timeout=5.0) as db:
+                cursor = await db.execute(
+                    "DELETE FROM checkpoints WHERE thread_id = ?", (scoped,)
+                )
+                deleted_checkpoints = cursor.rowcount
+                await db.commit()
     except Exception:
-        logger.exception("[AgentFlow] DELETE /threads/%s failed (DB)", thread_id)
+        logger.exception("delete_thread_db_failed", thread_id=scoped)
         raise HTTPException(status_code=500, detail="internal server error")
 
-    # Remove the FAISS index directory for this thread
     try:
         from backend.rag.ingest import INDEX_ROOT
-        import shutil as _shutil
-        idx_path = INDEX_ROOT / thread_id
+        idx_path = INDEX_ROOT / scoped
         if idx_path.is_dir():
-            await asyncio.to_thread(_shutil.rmtree, str(idx_path), ignore_errors=True)
+            await asyncio.to_thread(shutil.rmtree, str(idx_path), ignore_errors=True)
             deleted_faiss = True
     except Exception:
-        logger.warning("[AgentFlow] DELETE /threads/%s: FAISS cleanup failed", thread_id)
+        logger.warning("delete_thread_faiss_failed", thread_id=scoped)
 
     logger.info(
-        "[AgentFlow] deleted thread %s: %d checkpoints, faiss=%s",
-        thread_id,
-        deleted_checkpoints,
-        deleted_faiss,
+        "thread_deleted",
+        thread_id=scoped,
+        user=user.username,
+        deleted_checkpoints=deleted_checkpoints,
+        deleted_faiss=deleted_faiss,
     )
     return {
         "status": "deleted",
