@@ -3,6 +3,9 @@ __pycache__/
 .venv/
 venv/
 **/.env
+# .env.production is intentionally committed — it only contains VITE_* variables
+# which are baked into the client bundle and visible to all users anyway.
+!**/.env.production
 # HMAC secret used by backend/security.py to sign/verify FAISS indexes.
 # Must never be committed — anyone with the file can forge index.pkl
 # signatures and trigger arbitrary pickle RCE on the next load.
