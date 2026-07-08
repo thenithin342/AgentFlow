@@ -1,0 +1,49 @@
+# Render Blueprint — deploys AgentFlow backend as a free web service.
+# Reference: https://render.com/docs/blueprint-spec
+#
+# Usage: Push this file to the repo root. On render.com, click
+#   New → Blueprint → connect the repo → Render reads this file.
+#
+# The free instance has 512 MB RAM. We use fastembed (ONNX, ~80 MB)
+# instead of sentence-transformers (PyTorch, ~350 MB) to stay within budget.
+
+services:
+  - type: web
+    name: agentflow-backend
+    runtime: python
+    region: oregon
+    plan: free
+
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn backend.main:app --host 0.0.0.0 --port $PORT --workers 1 --timeout-keep-alive 120
+
+    healthCheckPath: /healthz
+
+    envVars:
+      - key: ENVIRONMENT
+        value: dev           # "dev" skips the JWT_SECRET required-in-prod check
+
+      - key: CHECKPOINT_DB_PATH
+        value: /tmp/agentflow.db
+
+      - key: DATA_DIR
+        value: /tmp/data
+
+      # ---- Secrets: set these in the Render dashboard (not here) ----
+      - key: JWT_SECRET
+        sync: false          # prompt in Render UI
+
+      - key: GROQ_API_KEY
+        sync: false
+
+      - key: TAVILY_API_KEY
+        sync: false
+
+      - key: GOOGLE_API_KEY
+        sync: false
+
+      - key: ADMIN_PASSWORD
+        sync: false
+
+      - key: CORS_ORIGINS
+        sync: false          # set to your Vercel frontend URL

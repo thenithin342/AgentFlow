@@ -11,10 +11,10 @@ langchain-google-genai>=2.0.0
 # Tools
 langchain-tavily>=0.1.0
 
-# RAG
+# RAG — use fastembed (ONNX-based, ~80MB) instead of sentence-transformers
+# (which pulls PyTorch ~300MB and OOMs on Render/free-tier 512MB instances).
 faiss-cpu>=1.8.0
-langchain-huggingface>=0.1.0
-sentence-transformers>=3.0.0
+fastembed>=0.3.0
 pypdf>=4.1.0
 
 # Persistence

@@ -21,7 +21,7 @@ from typing import Any
 
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_community.vectorstores import FAISS
-from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_community.embeddings import FastEmbedEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 from backend.validation import validate_thread_id
@@ -29,7 +29,11 @@ from backend.validation import validate_thread_id
 
 INDEX_ROOT = Path(__file__).resolve().parent.parent.parent / "faiss_indexes"
 
-_EMBEDDINGS: HuggingFaceEmbeddings | None = None
+# Using FastEmbedEmbeddings (ONNX-based, ~80MB resident) instead of
+# sentence-transformers (PyTorch, ~350MB) so the app fits inside
+# Render / Railway free-tier 512MB containers.
+_EMBED_MODEL = "BAAI/bge-small-en-v1.5"
+_EMBEDDINGS: FastEmbedEmbeddings | None = None
 _RETRIEVERS: OrderedDict[str, Any] = OrderedDict()
 _MAX_RETRIEVERS = 1000
 _MAX_RETRIEVER_LOCKS = 1000
@@ -42,10 +46,10 @@ def warm_embeddings() -> None:
     _get_embeddings()
 
 
-def _get_embeddings() -> HuggingFaceEmbeddings:
+def _get_embeddings() -> FastEmbedEmbeddings:
     global _EMBEDDINGS
     if _EMBEDDINGS is None:
-        _EMBEDDINGS = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
+        _EMBEDDINGS = FastEmbedEmbeddings(model_name=_EMBED_MODEL)
     return _EMBEDDINGS
 
 
