@@ -56,11 +56,9 @@ export default defineConfig(({ mode }) => {
       port: 4173,
       proxy: proxyTargets,
     },
-    define: {
-      // Surface VITE_API_BASE to the bundle so App.jsx can read it.
-      "import.meta.env.VITE_API_BASE": JSON.stringify(
-        env.VITE_API_BASE || ""
-      ),
-    },
+    // VITE_API_BASE is automatically exposed as import.meta.env.VITE_API_BASE
+    // by Vite's built-in VITE_* env var mechanism — no custom define needed.
+    // A custom define block here would override the real value from Vercel/Render
+    // env vars with whatever loadEnv() returns (often empty string).
   };
 });
