@@ -1,6 +1,37 @@
 {
   "rewrites": [
-    { "source": "/(.*)", "destination": "/index.html" }
+    {
+      "source": "/auth/:path*",
+      "destination": "https://agentflow-pl48.onrender.com/auth/:path*"
+    },
+    {
+      "source": "/chat",
+      "destination": "https://agentflow-pl48.onrender.com/chat"
+    },
+    {
+      "source": "/upload",
+      "destination": "https://agentflow-pl48.onrender.com/upload"
+    },
+    {
+      "source": "/threads/:path*",
+      "destination": "https://agentflow-pl48.onrender.com/threads/:path*"
+    },
+    {
+      "source": "/review/:path*",
+      "destination": "https://agentflow-pl48.onrender.com/review/:path*"
+    },
+    {
+      "source": "/health",
+      "destination": "https://agentflow-pl48.onrender.com/health"
+    },
+    {
+      "source": "/healthz",
+      "destination": "https://agentflow-pl48.onrender.com/healthz"
+    },
+    {
+      "source": "/(.*)",
+      "destination": "/index.html"
+    }
   ],
   "buildCommand": "npm run build",
   "outputDirectory": "dist",
