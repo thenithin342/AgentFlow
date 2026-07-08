@@ -228,6 +228,65 @@ async def test_chat_sse_contract(monkeypatch, client):
     assert "data: [DONE]" in body
 
 
+async def test_chat_sse_trace_markers(monkeypatch, client):
+    """/chat SSE must emit [NODE_START], [NODE_END], and [REASONING] sentinels.
+
+    The frontend reasoning rail renders these markers as a live status
+    panel (e.g. "research_agent is thinking..."). This test pins the
+    wire format so backend changes can't silently break the UI.
+    """
+    class _TraceFakeGraph(_FakeGraph):
+        def __init__(self):
+            super().__init__()
+            snap = self._StateSnap()
+            snap.values = {"sources": [], "final_response": "ok"}
+            self._state_snap = snap
+
+        async def astream_events(self, input_state, config, version):
+            yield {
+                "event": "on_chain_start",
+                "metadata": {"langgraph_node": "research_agent"},
+            }
+            yield {
+                "event": "on_tool_start",
+                "name": "tavily_search_results_json",
+                "metadata": {"langgraph_node": "research_agent"},
+            }
+            yield {
+                "event": "on_chat_model_stream",
+                "metadata": {"langgraph_node": "research_agent"},
+                "data": {"chunk": _Chunk("looking up " )},
+            }
+            yield {
+                "event": "on_chat_model_stream",
+                "metadata": {"langgraph_node": "research_agent"},
+                "data": {"chunk": _Chunk("context")},
+            }
+            yield {
+                "event": "on_chain_end",
+                "metadata": {"langgraph_node": "research_agent"},
+            }
+
+    monkeypatch.setattr(app.state, "graph", _TraceFakeGraph(), raising=False)
+    r = await client.post(
+        "/chat",
+        json={"thread_id": "trace-thread", "message": "search for x"},
+    )
+    assert r.status_code == 200, r.text
+    body = r.text
+    # Trace markers — exact format the frontend parses.
+    assert "data: [NODE_START:research_agent|t=" in body, body
+    assert "data: [NODE_END:research_agent]" in body, body
+    assert "data: [TOOL_START:tavily_search_results_json]" in body, body
+    # Reasoning rail fires per chunk (the "thinking" status).
+    assert "data: [REASONING:research_agent|looking up ]" in body, body
+    assert "data: [REASONING:research_agent|context]" in body, body
+    # Tokens still flow.
+    assert "data: looking up " in body
+    assert "data: context" in body
+    assert "data: [DONE]" in body
+
+
 async def test_upload_rejects_non_pdf(client):
     """/upload must reject a file whose extension is not .pdf."""
     files = {"file": ("malware.txt", b"not a pdf", "text/plain")}
@@ -456,3 +515,88 @@ async def test_api_key_required_when_configured(monkeypatch, auth_headers, fake_
             json={"thread_id": "smoke-thread", "message": "hi"},
         )
         assert r.status_code != 401, r.text
+
+
+# ---------------------------------------------------------------------------
+# Auth endpoint tests (frontend #6)
+# ---------------------------------------------------------------------------
+#
+# Phase 10: the frontend's LoginScreen posts to /auth/login and stores
+# the JWT in localStorage. These tests pin the wire contract of that
+# exchange so backend changes can't silently break the UI.
+
+
+async def test_login_success(auth_headers):
+    """POST /auth/login with valid creds returns a JWT bearer token.
+
+    The test fixture in conftest.py pre-creates user 'tester' with
+    password 'test-pw' before this runs.
+    """
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        r = await ac.post(
+            "/auth/login",
+            json={"username": "tester", "password": "test-pw"},
+        )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["token_type"] == "bearer"
+    assert body["access_token"].count(".") == 2  # header.payload.signature
+    assert isinstance(body["expires_in"], int) and body["expires_in"] > 0
+    # The token must actually be accepted on a protected route.
+    headers = {"Authorization": f"Bearer {body['access_token']}"}
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test", headers=headers) as ac2:
+        r = await ac2.get("/threads")
+        assert r.status_code == 200, r.text
+
+
+async def test_login_wrong_password(auth_headers):
+    """POST /auth/login with bad password returns 401, no token leak."""
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        r = await ac.post(
+            "/auth/login",
+            json={"username": "tester", "password": "WRONG"},
+        )
+    assert r.status_code == 401, r.text
+    # Generic message — must not say which field was wrong.
+    assert "invalid credentials" in r.text.lower()
+    body = r.json()
+    assert "access_token" not in body
+
+
+async def test_login_unknown_user(auth_headers):
+    """POST /auth/login with unknown username returns 401, same shape
+    as wrong-password (no user enumeration via timing or wording)."""
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        r = await ac.post(
+            "/auth/login",
+            json={"username": "no-such-user", "password": "anything"},
+        )
+    assert r.status_code == 401, r.text
+
+
+async def test_login_oversized_inputs(auth_headers):
+    """POST /auth/login must reject pathological input lengths with 400.
+
+    Without this guard, a request with a 1MB password could hash for
+    seconds (bcrypt cost factor). 1024 is plenty for a real password.
+    """
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        r = await ac.post(
+            "/auth/login",
+            json={"username": "tester", "password": "x" * 2000},
+        )
+    assert r.status_code == 400, r.text
+
+
+async def test_protected_route_requires_token(fake_graph):
+    """A protected route (e.g. /threads) returns 401 with no Authorization."""
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        r = await ac.get("/threads")
+    assert r.status_code == 401, r.text
+    assert r.headers.get("www-authenticate", "").lower() == "bearer"

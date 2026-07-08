@@ -141,17 +141,26 @@ def authenticate_user(settings: Settings, username: str, password: str) -> Optio
 # ---------------------------------------------------------------------------
 
 
+# Ephemeral secret used when JWT_SECRET is unset. Module-level so it is
+# stable for the lifetime of the process — generating it fresh on every
+# call would mean tokens signed in one request can't be verified in the
+# next (the comment below was wrong about "per-process" being enforced
+# by `secrets.token_bytes`, which generates a new value each call).
+_EPHEMERAL_SECRET: bytes = secrets.token_bytes(32)
+
+
 def _signing_secret(settings: Settings) -> bytes:
     if settings.jwt_secret:
         return settings.jwt_secret.encode("utf-8")
-    # Dev fallback: random per-process secret. Tokens invalidate on restart,
-    # which is the right behaviour — never ship without JWT_SECRET.
+    # Dev fallback: ephemeral secret, stable for this process. Tokens
+    # invalidate on restart, which is the right behaviour — never ship
+    # without JWT_SECRET.
     import logging
     logging.getLogger("agentflow.auth").warning(
         "[AgentFlow] JWT_SECRET not set — using ephemeral random key. "
         "All tokens will invalidate on restart. Set JWT_SECRET in production."
     )
-    return secrets.token_bytes(32)
+    return _EPHEMERAL_SECRET
 
 
 def issue_token(settings: Settings, username: str) -> str:

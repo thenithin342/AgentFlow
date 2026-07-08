@@ -25,11 +25,23 @@ const API_BASE = import.meta.env.VITE_API_BASE || "";
 const apiUrl = (path) => `${API_BASE}${path}`;
 
 function apiFetch(path, options = {}) {
-  return fetch(apiUrl(path), options);
+  // Inject the JWT as a Bearer header on every call. The backend
+  // (backend/auth.py:require_user) resolves identity from this header
+  // and scopes thread_ids per-user (backend/main.py:_config_for). If
+  // the token is missing or expired the backend returns 401 and the
+  // caller is responsible for redirecting to login.
+  const token = getToken();
+  const headers = { ...(options.headers || {}) };
+  if (token && !headers.Authorization) {
+    headers.Authorization = `Bearer ${token}`;
+  }
+  return fetch(apiUrl(path), { ...options, headers });
 }
 
 import { MAX_MESSAGE_CHARS, MAX_UPLOAD_BYTES, TRACE_STREAM_NODES, SSE_TOKEN_NODES } from "./constants";
 import { parseSSEPayload } from "./sseParser";
+import { getToken, clearToken, isExpired, getUsername } from "./auth";
+import LoginScreen from "./LoginScreen.jsx";
 
 function streamAgentMeta(agent) {
   if (agent === "chat_agent") return "chat";
@@ -577,6 +589,59 @@ const Message = memo(function Message({ msg, onApprove, onEditResend, onSubmitEd
 });
 
 export default function App() {
+  // Auth gate. The /auth/login endpoint is on the backend's
+  // PUBLIC_PATHS allowlist, so it works without a token — everything
+  // else requires `Authorization: Bearer <jwt>`. We hydrate auth
+  // state from localStorage on mount and again every 60s so a token
+  // expiring under the user is reflected without a hard reload.
+  const [authed, setAuthed] = useState(() => {
+    const t = getToken();
+    return t && !isExpired(t);
+  });
+  const [currentUser, setCurrentUser] = useState(() => {
+    const t = getToken();
+    return t && !isExpired(t) ? getUsername(t) : null;
+  });
+
+  useEffect(() => {
+    if (!authed) return;
+    const id = setInterval(() => {
+      const t = getToken();
+      if (!t || isExpired(t)) {
+        // Token expired mid-session — drop the user back to login.
+        // We don't auto-clear here: a sibling tab may have a fresher
+        // token, so we just re-evaluate on the next tick. If still
+        // expired on next poll, we bounce.
+        const t2 = getToken();
+        if (!t2 || isExpired(t2)) {
+          clearToken();
+          setAuthed(false);
+          setCurrentUser(null);
+        }
+      }
+    }, 60_000);
+    return () => clearInterval(id);
+  }, [authed]);
+
+  function handleLoginSuccess(token, username) {
+    setAuthed(true);
+    setCurrentUser(username);
+  }
+
+  function handleLogout() {
+    clearToken();
+    setAuthed(false);
+    setCurrentUser(null);
+  }
+
+  if (!authed) {
+    return <LoginScreen onSuccess={handleLoginSuccess} />;
+  }
+
+  return <ChatApp currentUser={currentUser} onLogout={handleLogout} />;
+}
+
+function ChatApp({ currentUser, onLogout }) {
   const [threadId, setThreadId] = useState(() => uuid());
   const [messages, setMessages] = useState([]);
   const [theme, setTheme] = useState("dark");
@@ -836,7 +901,6 @@ export default function App() {
           thread_id: threadId,
           message: text,
           review_required: reviewRequired,
-          user_id: "default",
         }),
         signal: abortRef.current.signal,
       });
@@ -888,6 +952,18 @@ export default function App() {
     // thread_id regex rejection.
     if (!res.ok) {
       setIsStreaming(false);
+      // 401 = token expired or revoked server-side. Clear and bounce
+      // to login instead of leaving the user staring at an error.
+      if (res.status === 401) {
+        clearToken();
+        showError("session expired — please sign in again");
+        // Bounce happens via the App-level effect watching the token.
+        // We can't unmount ChatApp from here without a context, so the
+        // next authed-check tick (within 60s) will redirect. Force it
+        // now by reloading — the simplest reliable reset.
+        setTimeout(() => window.location.reload(), 1200);
+        return;
+      }
       setTrace((t) => [
         ...t.map((e) => (e.active ? { ...e, active: false } : e)),
         { node: "router", label: `error ${res.status}`, time: now() },
@@ -1336,9 +1412,20 @@ export default function App() {
       // read.
       const res = await apiFetch("/upload", { method: "POST", body: fd });
       if (res.ok) {
+        let stats = null;
+        try { stats = await res.json(); } catch (_) {}
+        const chunks = stats?.chunks ?? "?";
+        const pages  = stats?.pages  ?? "?";
+        const label  = `📄 **${file.name}** indexed — ${pages} page(s), ${chunks} chunk(s). You can now ask questions about it.`;
+        setMessages((m) => [
+          ...m,
+          { role: "agent", agent: "router", text: label, id: crypto.randomUUID() },
+        ]);
         setTrace((t) => [...t, { node: "router", label: "PDF indexed", time: now() }]);
       } else {
-        showError(`upload failed (${res.status})`);
+        let detail = "";
+        try { const body = await res.json(); detail = body?.detail || ""; } catch (_) {}
+        showError(`Upload failed (${res.status})${detail ? ": " + detail : ""}`);
       }
     } catch (err) {
       showError(err.message || "upload failed");
@@ -1619,6 +1706,40 @@ export default function App() {
           </span>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          {currentUser && (
+            <span
+              style={{
+                fontFamily: "var(--af-font-mono)",
+                fontSize: 10.5,
+                color: "var(--af-text-muted)",
+                display: "flex",
+                alignItems: "center",
+                gap: 6,
+              }}
+              title={`signed in as ${currentUser}`}
+            >
+              <span style={{ opacity: 0.5 }}>·</span>
+              <span>{currentUser}</span>
+              <button
+                onClick={onLogout}
+                aria-label="Sign out"
+                title="Sign out"
+                style={{
+                  background: "transparent",
+                  border: "1px solid var(--af-border)",
+                  borderRadius: 4,
+                  color: "var(--af-text-muted)",
+                  padding: "1px 7px",
+                  fontFamily: "var(--af-font-mono)",
+                  fontSize: 9.5,
+                  cursor: "pointer",
+                  letterSpacing: "0.04em",
+                }}
+              >
+                SIGN OUT
+              </button>
+            </span>
+          )}
           <span style={{ fontFamily: "var(--af-font-mono)", fontSize: 10.5, color: "var(--af-text-muted)" }} title="Cmd/Ctrl+K for New Thread">
             thread {threadId.slice(0, 6)} <span style={{ opacity: 0.5 }}>⌘K</span>
           </span>

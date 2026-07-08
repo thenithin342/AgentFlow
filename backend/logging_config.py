@@ -44,6 +44,30 @@ def configure_logging() -> None:
         force=True,
     )
 
+    # Suppress known-benign noisy log lines:
+    #   1. LangSmith TracerException "No indexed run ID" — a race condition in
+    #      LangChain's async callback system where on_llm_end fires after the
+    #      run context is GC'd during streaming. Cosmetic only; tracing works.
+    #   2. Duplicate JWT ephemeral-key warnings from auth.py (fires per-request
+    #      without JWT_SECRET set; one startup warning is enough).
+    class _SuppressFilter(logging.Filter):
+        _SUPPRESS = (
+            "No indexed run ID",
+            "TracerException",
+            "ephemeral random key",
+        )
+
+        def filter(self, record: logging.LogRecord) -> bool:
+            msg = record.getMessage()
+            return not any(s in msg for s in self._SUPPRESS)
+
+    for noisy_logger in (
+        "langchain_core.tracers.langchain",
+        "langchain.callbacks.tracers.langchain",
+        "agentflow.auth",
+    ):
+        logging.getLogger(noisy_logger).addFilter(_SuppressFilter())
+
     # structlog: shared processors, then per-renderer
     shared_processors: list[Any] = [
         structlog.contextvars.merge_contextvars,

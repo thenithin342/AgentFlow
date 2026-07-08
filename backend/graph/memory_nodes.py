@@ -54,7 +54,7 @@ def _thread_id_from_config(config: RunnableConfig | None) -> str:
 # memory_reader_node
 # ---------------------------------------------------------------------------
 
-def memory_reader_node(state: AgentState, config: RunnableConfig | None = None) -> dict:
+def memory_reader_node(state: AgentState, config: RunnableConfig) -> dict:
     """Query LTM and inject relevant context into the state.
 
     Reads the latest user message as the query, retrieves the top-k facts from
@@ -88,7 +88,7 @@ def memory_reader_node(state: AgentState, config: RunnableConfig | None = None) 
 # memory_writer_node
 # ---------------------------------------------------------------------------
 
-def memory_writer_node(state: AgentState, config: RunnableConfig | None = None) -> dict:
+def memory_writer_node(state: AgentState, config: RunnableConfig) -> dict:
     """Extract facts from the completed turn and write them to LTM.
 
     Runs after human_review (or synthesizer for chat turns) so it has access
@@ -131,7 +131,7 @@ def memory_writer_node(state: AgentState, config: RunnableConfig | None = None) 
 # stm_compressor_node
 # ---------------------------------------------------------------------------
 
-def stm_compressor_node(state: AgentState, config: RunnableConfig | None = None) -> dict:
+def stm_compressor_node(state: AgentState, config: RunnableConfig) -> dict:
     """Compress old messages into an STM summary when the turn window is hit.
 
     Increments `turn_count` on every call. When `should_compress` returns True,

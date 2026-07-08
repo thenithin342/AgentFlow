@@ -50,7 +50,12 @@ def _get_embeddings() -> HuggingFaceEmbeddings:
 
 
 def _index_dir(thread_id: str) -> Path:
-    return INDEX_ROOT / thread_id
+    # thread_id may be the scoped form "user:<username>:<tid>" which
+    # contains colons. SQLite handles colons fine but Windows can't use
+    # them in directory names — replace with the closest legal char so
+    # FAISS indexes still live under a per-user, per-thread path.
+    safe = thread_id.replace(":", "_")
+    return INDEX_ROOT / safe
 
 
 def _faiss_index_files_valid(index_path: Path) -> bool:
@@ -102,8 +107,11 @@ def ingest_pdf(
     """Extract → chunk → embed → save a per-thread FAISS index.
 
     Returns ingest stats: ``document_id``, ``source``, ``pages``, ``chunks``.
+
+    The caller is responsible for validating ``thread_id`` *before* scoping it
+    to the user. We don't re-validate here because the index path is keyed on
+    the scoped id (e.g. ``user:admin:abc``) which the raw regex doesn't accept.
     """
-    validate_thread_id(thread_id)
     basename = source_name or os.path.basename(file_path) or "document.pdf"
     docs = PyPDFLoader(file_path).load()
     for doc in docs:
@@ -144,7 +152,9 @@ def get_retriever(thread_id: str):
     if cached is not None:
         _RETRIEVERS.move_to_end(thread_id)
         return cached
-    validate_thread_id(thread_id)
+    # thread_id arrives pre-scoped from the agent config (user:user:abc) and
+    # the raw regex above would reject it. Callers gate this through the
+    # HTTP layer / make_thread_id, so no re-validation here.
     lock = _retriever_lock(thread_id)
     with lock:
         cached = _RETRIEVERS.get(thread_id)

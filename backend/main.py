@@ -169,6 +169,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         try:
             app.state.checkpointer_cm = checkpointer_cm
             app.state.checkpointer = checkpointer
+            # Expose the underlying connection so /threads can query the
+            # checkpoints table directly. langgraph.checkpoint.alist requires
+            # `configurable.thread_id` even for global scans, which would
+            # force us to enumerate per thread — N round trips. Going direct
+            # to SQL is one query, indexed by the thread_id column.
+            app.state.db_conn = getattr(checkpointer, "conn", None)
+            app.state.checkpointer_kind = "postgres"
             app.state.graph = builder.compile(checkpointer=checkpointer)
             app.state.graph.name = "AgentFlow"
             await asyncio.to_thread(warm_embeddings)
@@ -197,6 +204,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             checkpointer = AsyncSqliteSaver(conn)
             try:
                 app.state.checkpointer = checkpointer
+                # Expose the connection so /threads can query the checkpoints
+                # table directly. See postgres branch above for the why.
+                app.state.db_conn = conn
+                app.state.checkpointer_kind = "sqlite"
                 app.state.graph = builder.compile(checkpointer=checkpointer)
                 app.state.graph.name = "AgentFlow"
                 await asyncio.to_thread(warm_embeddings)
@@ -381,14 +392,17 @@ def _config_for(user: CurrentUser, thread_id: str) -> dict:
 async def _get_upload_lock(thread_id: str) -> asyncio.Lock:
     async with _upload_locks_guard:
         if thread_id not in _upload_locks:
-            while len(_upload_locks) >= 1000:
-                for _ in range(len(_upload_locks)):
-                    old_thread_id, old_lock = next(iter(_upload_locks.items()))
-                    if not old_lock.locked():
-                        _upload_locks.pop(old_thread_id)
+            if len(_upload_locks) >= 1000:
+                # Evict the oldest unlocked entry. Snapshot the items so
+                # we iterate a stable copy (the dict may be mutated by
+                # other coroutines waiting on _upload_locks_guard).
+                evicted = False
+                for tid, lk in list(_upload_locks.items()):
+                    if not lk.locked():
+                        _upload_locks.pop(tid, None)
+                        evicted = True
                         break
-                    _upload_locks.move_to_end(old_thread_id)
-                else:
+                if not evicted:
                     raise HTTPException(
                         status_code=503,
                         detail="too many concurrent uploads; retry shortly",
@@ -565,7 +579,6 @@ async def chat(
       [TOOL_START:<tool_name>]
       [NODE_START:<node>|t=<iso8601>]
       [NODE_END:<node>]
-      [REASONING:<node>|<text>]    (chunk-level LLM output for the active node)
       <token text>
       [SOURCES:<n>]
       [FINAL:<json-encoded text>]
@@ -620,11 +633,14 @@ async def chat(
                     continue
                 text = content_to_str(getattr(chunk, "content", None))
                 if text:
-                    # Reasoning rail event — the active node is "thinking".
-                    # Frontend uses this to render a live status without
-                    # parsing the token stream.
-                    if active_node["name"]:
-                        yield _sse(f"[REASONING:{active_node['name']}|{text}]")
+                    # Yield the token to the visible draft. (A prior draft
+                    # of this code also emitted a [REASONING:node|text]
+                    # event here, but no frontend consumer rendered the
+                    # reasoning text — and the sseParser fell through to
+                    # kind=token, which concatenated the marker into the
+                    # visible response. The live trace is driven entirely
+                    # by [NODE_START]/[NODE_END] events, so we just yield
+                    # the token.)
                     yield _sse(text)
         except Exception:
             logger.exception("chat_failed", thread_id=req.thread_id, user=user.username)
@@ -792,39 +808,71 @@ async def get_thread_state(
 async def list_threads(
     user: CurrentUser = Depends(require_user),
 ) -> dict:
-    """List threads belonging to the current user."""
+    """List threads belonging to the current user.
+
+    We query the checkpointer's underlying connection directly rather than
+    calling `graph.checkpointer.alist({})`. The langgraph `alist` contract
+    requires `configurable.thread_id` even for global scans; the SQL
+    implementation in `langgraph/checkpoint/sqlite/utils.py:95` raises
+    `KeyError: 'thread_id'` when it's missing. A per-thread `alist` would
+    also be N round trips. Going direct: one query against the indexed
+    `thread_id` column, filter on the per-user prefix in SQL.
+    """
     scoped_prefix = f"user:{user.username}:"
-    graph = getattr(app.state, "graph", None)
-    if graph is None:
+    db_conn = getattr(app.state, "db_conn", None)
+    kind = getattr(app.state, "checkpointer_kind", None)
+    if db_conn is None or kind is None:
         return {"threads": []}
 
-    # Pull every thread the checkpointer knows about and filter by prefix.
-    # Postgres checkpointer has `alist`; SQLite has the same shape via the
-    # `__call__` of the underlying store. We do a generic scan over the
-    # graph's `get_state_history` for the per-user prefix.
+    # `checkpoints` is the langgraph table for both backends. Schema:
+    #   thread_id TEXT, checkpoint_id TEXT, parent_checkpoint_id TEXT, ...
+    # The most recent checkpoint per thread is the "last seen" timestamp.
+    sql = (
+        "SELECT thread_id, checkpoint_id FROM checkpoints "
+        "WHERE thread_id LIKE ? "
+        "ORDER BY thread_id, checkpoint_id DESC"
+    )
+    # LIKE wildcards: the prefix is fixed (alnum + colons + dots), so it's
+    # safe — no user input. We escape '%' and '_' just in case a future
+    # username is allowed to contain them.
+    like_pattern = scoped_prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+    sql_args: tuple = (like_pattern,)
+
     threads: list[dict] = []
+    seen: set[str] = set()
     try:
-        cp = getattr(graph, "checkpointer", None)
-        if cp is None:
-            return {"threads": []}
-        aiter = getattr(cp, "alist", None)
-        if aiter is None:
-            return {"threads": []}
-        config = {"configurable": {}}
-        seen: set[str] = set()
-        try:
-            async for tup in aiter(config):
-                tid = (tup.config or {}).get("configurable", {}).get("thread_id", "")
-                if not tid.startswith(scoped_prefix) or tid in seen:
+        if kind == "sqlite":
+            async with db_conn.execute(sql, sql_args) as cur:
+                async for row in cur:
+                    tid = row[0]
+                    if tid in seen:
+                        continue  # keep the first (most recent) per thread
+                    seen.add(tid)
+                    threads.append({
+                        "thread_id": tid[len(scoped_prefix):],
+                        "last_seen": _checkpoint_id_to_iso(row[1]),
+                    })
+                    if len(threads) >= 100:
+                        break
+        elif kind == "postgres":
+            # AsyncPostgresSaver.conn is an asyncpg.Connection (supports
+            # parametrised queries + async iteration via .fetch / .cursor).
+            fetch = getattr(db_conn, "fetch", None)
+            if fetch is None:
+                return {"threads": []}
+            rows = await fetch(sql, *sql_args)
+            for row in rows:
+                tid = row["thread_id"]
+                if tid in seen:
                     continue
                 seen.add(tid)
                 threads.append({
                     "thread_id": tid[len(scoped_prefix):],
-                    "last_seen": _checkpoint_id_to_iso(getattr(tup, "checkpoint_id", None)),
+                    "last_seen": _checkpoint_id_to_iso(row["checkpoint_id"]),
                 })
                 if len(threads) >= 100:
                     break
-        except TypeError:
+        else:
             return {"threads": []}
     except Exception:
         logger.exception("list_threads_failed", user=user.username)

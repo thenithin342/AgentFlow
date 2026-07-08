@@ -38,8 +38,11 @@ WORKDIR /app
 COPY frontend/package*.json ./
 RUN npm install
 COPY frontend/ .
-# Adjust the backend URL for production
-ENV VITE_API_URL=/api 
+# Adjust the backend URL for production. This is the base URL the
+# bundle uses for /auth/login, /chat, /upload, etc. The Vite env
+# name is VITE_API_BASE (must be prefixed VITE_ to be exposed to
+# the client). Empty string = same-origin via the nginx proxy below.
+ENV VITE_API_BASE=/api
 RUN npm run build
 
 # Serve stage (Nginx)
@@ -163,7 +166,7 @@ the **Deployments** tab to confirm `uvicorn` is up.
 ### Step 6 — Point the frontend at the backend
 In the frontend service's environment, set:
 ```
-VITE_API_URL=https://<your-backend>.up.railway.app
+VITE_API_BASE=https://<your-backend>.up.railway.app
 ```
 Rebuild the frontend. The Vite dev proxy pattern (never bundle keys
 into client JS) still applies — see Option 3 for the full frontend
@@ -189,8 +192,9 @@ If you don't want to manage a VM, you can split the app across managed platforms
 ### 1. Frontend (Vercel or Netlify)
 1. Push your code to GitHub.
 2. Go to Vercel/Netlify, import your repository, and select the `frontend` folder as the Root Directory.
-3. Add an Environment Variable: `VITE_API_URL = https://your-backend-url.onrender.com`
-4. Deploy.
+3. Add an Environment Variable: `VITE_API_BASE = https://your-backend-url.onrender.com` (no trailing slash). This is the absolute base URL the React app uses for all `/auth/login`, `/chat`, `/upload`, etc. calls.
+4. Add a rewrite rule on Vercel/Netlify so `/auth/*`, `/chat`, `/upload`, `/threads/*`, `/review/*` proxy to the backend if you put them on the same host, OR keep the cross-origin setup and just rely on `VITE_API_BASE` + CORS (set `CORS_ORIGINS` on the backend to the frontend's public URL).
+5. Deploy. The static bundle is fully self-contained; no server-side rendering.
 
 ### 2. Backend (Render or Railway)
 Because AgentFlow writes to local files (`agentflow.db` and `ltm_indexes`), **you must mount a persistent disk**. Ephemeral disks on PaaS providers wipe out files on every deployment, which would delete all agent memory.
@@ -201,7 +205,29 @@ Because AgentFlow writes to local files (`agentflow.db` and `ltm_indexes`), **yo
 3. Set the Start Command: `uvicorn backend.main:app --host 0.0.0.0 --port 10000`
 4. **Important**: Go to the "Disks" section and add a disk mounted at `/opt/render/project/src/data`.
 5. You will need to update your backend code to save the `.db` and `ltm_indexes` into that specific folder if running in production.
-6. Add your Environment Variables (like `OPENAI_API_KEY` and your basic auth `API_KEY`).
+6. Add your Environment Variables (see "Auth & secrets" below).
+
+### 3. Auth & secrets
+The frontend shows a login screen that posts to `POST /auth/login` and stores the resulting JWT in `localStorage`. Every API call then sends `Authorization: Bearer <jwt>`. The backend's `backend/auth.py:require_user` enforces it; the `/auth/login` endpoint itself is the only public path (see `PUBLIC_PATHS` in `backend/main.py`).
+
+**Bootstrap the first admin user.** On first run, `backend/auth.py:ensure_admin` creates a user named `admin` (from `ADMIN_USERNAME`) with the password from `ADMIN_PASSWORD`. If `ADMIN_PASSWORD` is unset, a random 16-char password is generated and **printed to the server log** — copy it from the boot logs and change it immediately. The store is a JSON file at `${DATA_DIR}/users.json`; mount `DATA_DIR` on a persistent disk or you'll lose users on every restart.
+
+**Required env vars for production:**
+| Name | Why |
+| --- | --- |
+| `ENVIRONMENT=production` | Flips the pydantic-settings validator into fail-fast mode |
+| `JWT_SECRET` | Output of `openssl rand -hex 32` — required in production, no fallback |
+| `ADMIN_PASSWORD` | Long random string — change from default after first deploy |
+| `GROQ_API_KEY` | LLM provider |
+| `TAVILY_API_KEY` | Search agent |
+| `CORS_ORIGINS` | Comma-separated list of frontend URLs that may call the API |
+| `POSTGRES_CONN_STRING` | (Railway) Auto-injected by the Postgres plugin |
+
+**Adding more users.** There is no `/auth/register` endpoint — the user store is admin-provisioned. To add a user from the host shell:
+```bash
+python -c "from backend.auth import hash_password; print(hash_password('your-password'))"
+```
+Paste the resulting bcrypt hash into `data/users.json` under a new username key. (For a more user-friendly flow, wire up an admin-only `/auth/users` POST in a follow-up.)
 
 ### Security Reminders for Deployment:
 - **Enable Auth**: Make sure your `API_KEY` environment variable is set to a strong, secure value in your production `.env` so the `backend/security.py` middleware protects your endpoints.

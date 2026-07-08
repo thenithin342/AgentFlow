@@ -22,7 +22,7 @@ import react from "@vitejs/plugin-react";
  * NEVER bundled into the client JS — browsers must not hold bearer tokens
  * for a public static bundle. Production: terminate auth at nginx/Caddy.
  */
-const API_PATHS = ["/chat", "/upload", "/threads", "/review", "/health"];
+const API_PATHS = ["/auth", "/chat", "/upload", "/threads", "/review", "/health"];
 
 function buildProxy(apiKey) {
   const proxy = {};

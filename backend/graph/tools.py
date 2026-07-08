@@ -309,6 +309,7 @@ def code_interpreter(code: str) -> str:
 
     import subprocess
     import tempfile
+    import sys
     
     with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
         # Wrap user code to print the last expression if it doesn't already print
@@ -321,7 +322,7 @@ def code_interpreter(code: str) -> str:
         
     try:
         result = subprocess.run(
-            ["python", temp_path],
+            [sys.executable, temp_path],
             capture_output=True,
             text=True,
             timeout=_CODE_TIMEOUT

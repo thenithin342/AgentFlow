@@ -144,7 +144,7 @@ def _build_user_payload(state: AgentState) -> str:
 
 # --- Node -------------------------------------------------------------------
 
-def synthesizer_node(state: AgentState, config: RunnableConfig | None = None) -> dict:
+def synthesizer_node(state: AgentState, config: RunnableConfig) -> dict:
     """Rewrite agent output into the final user-facing response.
 
     Returns `{"final_response": <text>}`. If the LLM returns empty/None,

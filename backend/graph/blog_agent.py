@@ -167,7 +167,7 @@ def _blog_to_markdown(blog: dict) -> str:
 # Node
 # ---------------------------------------------------------------------------
 
-def blog_writer_node(state: AgentState, config: RunnableConfig | None = None) -> dict:
+def blog_writer_node(state: AgentState, config: RunnableConfig) -> dict:
     """ReAct blog writer agent with tavily_search + retrieve_documents.
 
     Returns:
