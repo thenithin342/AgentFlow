@@ -49,9 +49,9 @@ LTM_MAX_FACTS = 200
 # ---------------------------------------------------------------------------
 
 def _get_embeddings():
-    """Reuse the same HuggingFace model as the RAG pipeline."""
-    from langchain_huggingface import HuggingFaceEmbeddings
-    return HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
+    """Reuse the same FastEmbed model as the RAG pipeline to save memory."""
+    from backend.rag.ingest import _get_embeddings as get_rag_embeddings
+    return get_rag_embeddings()
 
 
 def _mask_id(user_id: str) -> str:
