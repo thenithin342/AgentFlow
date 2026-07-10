@@ -32,14 +32,14 @@ export function getToken() {
   }
 }
 
-/** Persist a JWT. */
+/** Persist a JWT. Returns true on success, false if storage is unavailable. */
 export function setToken(token) {
   try {
     localStorage.setItem(STORAGE_KEY, token);
+    return true;
   } catch {
-    // Storage may be disabled (private mode, quota). The login will
-    // succeed server-side but the user will be bounced back to login
-    // on reload. Surface this via the login form error path.
+    // Storage may be disabled (private mode, quota exceeded).
+    return false;
   }
 }
 

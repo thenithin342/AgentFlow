@@ -28,6 +28,7 @@ import json
 import logging
 import os
 import threading
+import hashlib
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -53,11 +54,40 @@ def _get_embeddings():
     return HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
 
 
+def _mask_id(user_id: str) -> str:
+    return hashlib.sha256(user_id.encode("utf-8")).hexdigest()[:16]
+
+
+_LTM_MIGRATE_LOCK = threading.Lock()
+_LTM_MIGRATED: set[str] = set()
+
+
 def _ltm_dir(user_id: str) -> Path:
-    # Sanitise user_id: only keep alphanumeric, dash, underscore, dot
-    safe = "".join(c for c in user_id if c.isalnum() or c in "-_.")
-    safe = safe[:64] or "default"
-    return LTM_ROOT / safe
+    """Return the hashed LTM directory for *user_id*.
+
+    If a legacy sanitised directory (colon→underscore) exists and the hashed
+    directory does not, migrates the data once (concurrency-safe) before
+    returning the hashed path.
+    """
+    safe = hashlib.sha256(user_id.encode("utf-8")).hexdigest()
+    new_dir = LTM_ROOT / safe
+    if new_dir.exists():
+        return new_dir
+    # Check for legacy path (used before the hashing migration).
+    legacy_safe = user_id.replace(":", "_").replace("/", "_").replace("\\", "_")
+    legacy_dir = LTM_ROOT / legacy_safe
+    if legacy_dir.exists() and user_id not in _LTM_MIGRATED:
+        with _LTM_MIGRATE_LOCK:
+            if user_id not in _LTM_MIGRATED and legacy_dir.exists() and not new_dir.exists():
+                try:
+                    import shutil as _shutil
+                    _shutil.copytree(str(legacy_dir), str(new_dir))
+                    _shutil.rmtree(str(legacy_dir), ignore_errors=True)
+                    logger.info("[LTM] Migrated legacy index for user %s", _mask_id(user_id))
+                except Exception:
+                    logger.warning("[LTM] Failed to migrate legacy index for user %s", _mask_id(user_id), exc_info=True)
+                _LTM_MIGRATED.add(user_id)
+    return new_dir
 
 
 def _load_index(user_id: str):
@@ -70,7 +100,7 @@ def _load_index(user_id: str):
         if faiss_file.is_file() and pkl_file.is_file():
             from backend.security import verify_file
             if not verify_file(pkl_file):
-                logger.error("[LTM] Integrity check failed for user %s index.pkl", user_id)
+                logger.error("[LTM] Integrity check failed for user %s index.pkl", _mask_id(user_id))
                 return None
             return FAISS.load_local(
                 str(idx_dir),
@@ -78,7 +108,7 @@ def _load_index(user_id: str):
                 allow_dangerous_deserialization=True,
             )
     except Exception:
-        logger.warning("[LTM] failed to load index for user %s", user_id, exc_info=True)
+        logger.warning("[LTM] failed to load index for user %s", _mask_id(user_id), exc_info=True)
     return None
 
 
@@ -117,7 +147,7 @@ def read_ltm(user_id: str, query: str) -> str:
                 lines.append(f"- {fact}")
         return "\n".join(lines)
     except Exception:
-        logger.warning("[LTM] read_ltm failed for user %s", user_id, exc_info=True)
+        logger.warning("[LTM] read_ltm failed for user %s", _mask_id(user_id), exc_info=True)
         return ""
 
 
@@ -129,6 +159,12 @@ def write_ltm(user_id: str, facts: list[str], source_thread_id: str = "") -> Non
     """
     if not facts:
         return
+        
+    from backend.settings import get_settings
+    settings = get_settings()
+    if not getattr(settings, "ltm_enabled", True): # Optional config gate
+        return
+        
     try:
         from langchain_core.documents import Document
         from langchain_community.vectorstores import FAISS
@@ -151,10 +187,17 @@ def write_ltm(user_id: str, facts: list[str], source_thread_id: str = "") -> Non
                 index = FAISS.from_documents(docs, _get_embeddings())
             else:
                 index.add_documents(docs)
+                
+            if index.index.ntotal > LTM_MAX_FACTS:
+                all_docs = list(index.docstore._dict.values())
+                all_docs.sort(key=lambda d: d.metadata.get("timestamp", ""))
+                keep_docs = all_docs[-LTM_MAX_FACTS:]
+                index = FAISS.from_documents(keep_docs, _get_embeddings())
+                
             _save_index(user_id, index)
-        logger.info("[LTM] wrote %d facts for user %s", len(docs), user_id)
+        logger.info("[LTM] wrote %d facts for user %s", len(docs), _mask_id(user_id))
     except Exception:
-        logger.warning("[LTM] write_ltm failed for user %s", user_id, exc_info=True)
+        logger.warning("[LTM] write_ltm failed for user %s", _mask_id(user_id), exc_info=True)
 
 
 def extract_facts(turn_text: str, llm) -> list[str]:

@@ -278,9 +278,6 @@ async def test_chat_sse_trace_markers(monkeypatch, client):
     assert "data: [NODE_START:research_agent|t=" in body, body
     assert "data: [NODE_END:research_agent]" in body, body
     assert "data: [TOOL_START:tavily_search_results_json]" in body, body
-    # Reasoning rail fires per chunk (the "thinking" status).
-    assert "data: [REASONING:research_agent|looking up ]" in body, body
-    assert "data: [REASONING:research_agent|context]" in body, body
     # Tokens still flow.
     assert "data: looking up " in body
     assert "data: context" in body

@@ -31,6 +31,7 @@ import threading
 
 from dotenv import load_dotenv
 from langchain_groq import ChatGroq
+import groq
 from langchain_google_genai import ChatGoogleGenerativeAI
 
 load_dotenv()
@@ -81,7 +82,10 @@ def _build_groq_pool(model: str) -> ChatGroq:
 
     Each key gets its own ChatGroq instance. The primary key is the first
     runnable; the rest are chained as fallbacks with exceptions_to_handle=
-    (Exception,) so any 429 / 503 / network error triggers the next key.
+    (APIConnectionError, APITimeoutError, RateLimitError, APIStatusError)
+    so 429 / 503 / network errors trigger the next key. Catching bare
+    Exception would also mask programming bugs (TypeError, KeyError, ...)
+    and silently route them to a different key ? bad for debugging.
     Falls back to Gemini at the end of the chain if GOOGLE_API_KEY is set.
     """
     keys = _collect_groq_keys()
@@ -97,7 +101,15 @@ def _build_groq_pool(model: str) -> ChatGroq:
         fallbacks.append(gemini)
     if not fallbacks:
         return clients[0]
-    return clients[0].with_fallbacks(fallbacks, exceptions_to_handle=(Exception,))
+    return clients[0].with_fallbacks(
+        fallbacks,
+        exceptions_to_handle=(
+            groq.APIConnectionError,
+            groq.APITimeoutError,
+            groq.RateLimitError,
+            groq.APIStatusError,
+        ),
+    )
 
 
 def _build_fallback() -> ChatGoogleGenerativeAI | None:

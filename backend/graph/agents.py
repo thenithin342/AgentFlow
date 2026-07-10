@@ -48,6 +48,10 @@ from backend.graph.tools import (
     url_reader,
     code_interpreter,
 )
+# llm_fast is imported lazily inside each agent function to avoid
+# triggering Groq key validation at module import time (breaks CI without key).
+# (Hoisted from inline in research/analysis/chat ? inline `from` between
+# function-call args raised SyntaxError and broke module import.)
 from backend.llm import llm_fast
 
 
@@ -120,6 +124,7 @@ import threading
 _AGENT_CACHE: OrderedDict = OrderedDict()
 _MAX_AGENT_CACHE = 128
 _AGENT_CACHE_LOCK = threading.Lock()
+_AGENT_CACHE_EVENTS: dict = {}
 
 
 def _get_cached_agent(
@@ -142,9 +147,21 @@ def _get_cached_agent(
     a system prompt without rebuilding the graph per call.
     """
     prompt_key = hashlib.sha256(prompt.encode()).hexdigest() if prompt else None
+    # Resolve a stable model identifier for the cache key. `RunnableWithFallbacks`
+    # does forward `model_name` (verified on langchain-core 1.x), but its identity
+    # includes the fallback chain -- different sets of keys collapse to the same
+    # string. Use the FIRST runnable's model name (the primary key) as the
+    # distinguishing identifier. If the key cannot be resolved, fall back to id()
+    # so we never silently merge two distinct runnables into one cache entry.
+    llm_model_key = getattr(llm, "model_name", None)
+    if not llm_model_key:
+        try:
+            llm_model_key = type(llm.first).__name__
+        except AttributeError:
+            llm_model_key = f"id:{id(llm)}"
     key = (
         tuple(sorted(t.name for t in tools)),
-        getattr(llm, "model_name", ""),
+        llm_model_key,
         prompt_key,
         thread_id,
     )
@@ -154,17 +171,39 @@ def _get_cached_agent(
             _AGENT_CACHE.move_to_end(key)
             return cached
             
-    if prompt:
-        agent = create_react_agent(llm, tools, prompt=prompt)
-    else:
-        agent = create_react_agent(llm, tools)
-        
-    with _AGENT_CACHE_LOCK:
-        while len(_AGENT_CACHE) >= _MAX_AGENT_CACHE:
-            _AGENT_CACHE.popitem(last=False)
-        _AGENT_CACHE[key] = agent
-        
-    return agent
+        event = _AGENT_CACHE_EVENTS.get(key)
+        if event is not None:
+            wait = True
+        else:
+            event = threading.Event()
+            _AGENT_CACHE_EVENTS[key] = event
+            wait = False
+
+    if wait:
+        event.wait()
+        with _AGENT_CACHE_LOCK:
+            cached = _AGENT_CACHE.get(key)
+            if cached is not None:
+                _AGENT_CACHE.move_to_end(key)
+                return cached
+            
+    try:
+        if prompt:
+            agent = create_react_agent(llm, tools, prompt=prompt)
+        else:
+            agent = create_react_agent(llm, tools)
+            
+        with _AGENT_CACHE_LOCK:
+            while len(_AGENT_CACHE) >= _MAX_AGENT_CACHE:
+                _AGENT_CACHE.popitem(last=False)
+            _AGENT_CACHE[key] = agent
+            
+        return agent
+    finally:
+        if not wait:
+            event.set()
+            with _AGENT_CACHE_LOCK:
+                _AGENT_CACHE_EVENTS.pop(key, None)
 
 
 # --- Agent system prompts ---------------------------------------------------

@@ -13,12 +13,30 @@ authors = [
 ]
 dependencies = [
     "fastapi",
-    "uvicorn",
+    "uvicorn[standard]",
     "langchain",
     "langgraph",
     "faiss-cpu",
     "pypdf",
-    "aiosqlite"
+    "aiosqlite",
+    "langgraph-checkpoint-postgres",
+    "asyncpg",
+    "psycopg[binary]",
+    "gunicorn",
+    "python-multipart",
+    "slowapi",
+    "pyjwt",
+    "bcrypt",
+    "pydantic-settings",
+    "structlog",
+    "langchain-core",
+    "langchain-community",
+    "langchain-groq",
+    "langchain-google-genai",
+    "langchain-tavily",
+    "fastembed",
+    "langgraph-checkpoint-sqlite",
+    "python-dotenv"
 ]
 
 [project.optional-dependencies]
@@ -27,3 +45,6 @@ dev = [
     "pytest-asyncio~=0.24.0",
     "httpx"
 ]
+
+[tool.setuptools.packages.find]
+include = ["backend*"]

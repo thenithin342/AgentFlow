@@ -291,7 +291,7 @@ def test_synthesizer_produces_final_response():
         "agent_output": "The capital of France is Paris.",
         "sources": [],
     }
-    result = synthesizer_node(state)
+    result = synthesizer_node(state, {"configurable": {"thread_id": "test"}})
     assert "final_response" in result
     assert isinstance(result["final_response"], str)
     assert result["final_response"].strip(), "final_response must be non-empty"
@@ -305,7 +305,7 @@ def test_synthesizer_includes_sources():
         "agent_output": "Paris is the capital of France.",
         "sources": [url],
     }
-    result = synthesizer_node(state)
+    result = synthesizer_node(state, {"configurable": {"thread_id": "test"}})
     assert result.get("final_response"), "final_response missing"
     text = result["final_response"]
     assert "Source" in text or url in text, (
@@ -597,12 +597,12 @@ THREAD_RAG = "test-rag-001"
 
 def test_ingest_pdf_creates_index():
     """ingest_pdf must write a per-thread FAISS index under faiss_indexes/."""
-    from backend.rag.ingest import ingest_pdf
+    from backend.rag.ingest import ingest_pdf, _index_dir
 
     sample = _ensure_sample_pdf()
     ingest_pdf(sample, THREAD_RAG)
 
-    index_dir = Path("faiss_indexes") / THREAD_RAG
+    index_dir = _index_dir(THREAD_RAG)
     assert index_dir.exists(), f"Expected {index_dir} to exist after ingest_pdf"
     assert (index_dir / "index.faiss").exists(), "FAISS index file missing"
     assert (index_dir / "index.pkl").exists(), "FAISS pickle sidecar missing"
@@ -636,11 +636,11 @@ def test_retrieve_documents_handles_missing_index():
 
 def test_ingest_pdf_appends_to_existing_index():
     """Re-uploading a PDF must merge into the existing FAISS index."""
-    from backend.rag.ingest import ingest_pdf, get_retriever, INDEX_ROOT
+    from backend.rag.ingest import ingest_pdf, get_retriever, _index_dir
     from backend.graph.tools import make_retrieve_documents_tool
 
     thread = "test-rag-append-001"
-    index_dir = INDEX_ROOT / thread
+    index_dir = _index_dir(thread)
     if index_dir.exists():
         import shutil
         shutil.rmtree(index_dir)

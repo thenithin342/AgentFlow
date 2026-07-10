@@ -24,7 +24,7 @@ import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
 const API_BASE = import.meta.env.VITE_API_BASE || "";
 const apiUrl = (path) => `${API_BASE}${path}`;
 
-function apiFetch(path, options = {}) {
+async function apiFetch(path, options = {}) {
   // Inject the JWT as a Bearer header on every call. The backend
   // (backend/auth.py:require_user) resolves identity from this header
   // and scopes thread_ids per-user (backend/main.py:_config_for). If
@@ -35,7 +35,12 @@ function apiFetch(path, options = {}) {
   if (token && !headers.Authorization) {
     headers.Authorization = `Bearer ${token}`;
   }
-  return fetch(apiUrl(path), { ...options, headers });
+  const res = await fetch(apiUrl(path), { ...options, headers });
+  if (res.status === 401) {
+    clearToken();
+    window.dispatchEvent(new Event("agentflow:auth_error"));
+  }
+  return res;
 }
 
 import { MAX_MESSAGE_CHARS, MAX_UPLOAD_BYTES, TRACE_STREAM_NODES, SSE_TOKEN_NODES } from "./constants";
@@ -605,6 +610,14 @@ export default function App() {
 
   useEffect(() => {
     if (!authed) return;
+    
+    const handleAuthError = () => {
+      clearToken();
+      setAuthed(false);
+      setCurrentUser(null);
+    };
+    window.addEventListener("agentflow:auth_error", handleAuthError);
+    
     const id = setInterval(() => {
       const t = getToken();
       if (!t || isExpired(t)) {
@@ -614,13 +627,14 @@ export default function App() {
         // expired on next poll, we bounce.
         const t2 = getToken();
         if (!t2 || isExpired(t2)) {
-          clearToken();
-          setAuthed(false);
-          setCurrentUser(null);
+          handleAuthError();
         }
       }
     }, 60_000);
-    return () => clearInterval(id);
+    return () => {
+      clearInterval(id);
+      window.removeEventListener("agentflow:auth_error", handleAuthError);
+    };
   }, [authed]);
 
   function handleLoginSuccess(token, username) {
@@ -1195,6 +1209,7 @@ function ChatApp({ currentUser, onLogout }) {
         ? `${shortAgent} · ${finalElapsed} · ${sourcesCount} sources`
         : `${shortAgent} · ${finalElapsed} · done`;
     const doneNode = activeStreamAgentRef.current;
+    let streamSucceeded = false;
 
     if (sentinel === "[INTERRUPT]") {
       setMessages((m) => {
@@ -1229,6 +1244,7 @@ function ChatApp({ currentUser, onLogout }) {
         { node: doneNode, label: "error", time: now() },
       ]);
     } else {
+      streamSucceeded = true;
       setMessages((m) => {
         const next = [...m];
         const idx = next.findIndex((x) => x.id === streamingId);
@@ -1253,7 +1269,7 @@ function ChatApp({ currentUser, onLogout }) {
 
     // After a blog_writer turn, fetch the structured blog_output and switch
     // the UI to the Blog tab automatically.
-    if (didRunBlogWriter && streamGenRef.current === myGen) {
+    if (didRunBlogWriter && streamGenRef.current === myGen && streamSucceeded) {
       try {
         const blogRes = await apiFetch(`/threads/${threadId}/blog`);
         if (blogRes.ok) {
@@ -1480,11 +1496,15 @@ function ChatApp({ currentUser, onLogout }) {
     e.stopPropagation();
     if (!window.confirm(`Delete thread ${id.slice(0, 8)}…? This is irreversible.`)) return;
     try {
-      await apiFetch(`/threads/${id}`, { method: "DELETE" });
-      if (id === threadId) {
-        resetThread();
+      const res = await apiFetch(`/threads/${id}`, { method: "DELETE" });
+      if (res.ok) {
+        if (id === threadId) {
+          resetThread();
+        }
+        fetchThreadList();
+      } else {
+        showError("Failed to delete thread");
       }
-      fetchThreadList();
     } catch (err) {
       console.error("deleteThread failed", err);
       showError("Failed to delete thread");

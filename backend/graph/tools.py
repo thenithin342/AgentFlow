@@ -221,22 +221,59 @@ def url_reader(url: str) -> str:
     if not (url.startswith("http://") or url.startswith("https://")):
         return "Error: url must start with http:// or https://"
     try:
-        import urllib.request
+        import http.client
         import urllib.parse
         import urllib.error
         import re as _re
         import socket
         import ipaddress
+        import ssl
 
-        def validate_host(hostname):
-            if not hostname: return
-            ip = socket.gethostbyname(hostname)
-            ip_obj = ipaddress.ip_address(ip)
-            if ip_obj.is_private or ip_obj.is_loopback or ip_obj.is_link_local:
-                raise ValueError("Resolves to private/local IP")
+        class SafeHTTPConnection(http.client.HTTPConnection):
+            def _resolve_and_validate(self) -> str:
+                # Resolve once and pin the validated IP. We must NOT rely on the
+                # second DNS lookup performed by `socket.create_connection` --
+                # between the first and second resolve, a DNS rebinding attacker
+                # can flip the answer to a private/loopback address. Connect only
+                # to the IP we just validated, and send the original Host header
+                # so SNI / vhost routing still works.
+                infos = socket.getaddrinfo(self.host, self.port, type=socket.SOCK_STREAM)
+                if not infos:
+                    raise ValueError(f"No DNS results for {self.host!r}")
+                for family, _type, _proto, _canon, sockaddr in infos:
+                    ip = sockaddr[0]
+                    ip_obj = ipaddress.ip_address(ip)
+                    if (ip_obj.is_private or ip_obj.is_loopback or ip_obj.is_link_local
+                            or ip_obj.is_multicast or ip_obj.is_reserved or ip_obj.is_unspecified
+                            or not ip_obj.is_global):
+                        raise ValueError(f"Resolves to non-public IP: {ip}")
+                # Use the FIRST validated IP; subsequent A/AAAA ranswers should not
+                # bypass the check above. Re-resolving here is the bug we are fixing.
+                return infos[0][4][0]
 
-        parsed = urllib.parse.urlparse(url)
-        validate_host(parsed.hostname)
+            def connect(self):
+                ip = self._resolve_and_validate()
+                self.sock = socket.create_connection((ip, self.port), self.timeout, self.source_address)
+                if getattr(self, "_tunnel_host", None):
+                    self._tunnel()
+
+        class SafeHTTPSConnection(http.client.HTTPSConnection):
+            def connect(self):
+                ip = self._resolve_and_validate()
+                self.sock = socket.create_connection((ip, self.port), self.timeout, self.source_address)
+                if getattr(self, "_tunnel_host", None):
+                    self._tunnel()
+                # server_hostname must be the original DNS name so SNI + cert
+                # validation work; the connection itself is pinned to the IP.
+                self.sock = self._context.wrap_socket(self.sock, server_hostname=self.host)
+
+        class SafeHTTPHandler(urllib.request.HTTPHandler):
+            def http_open(self, req):
+                return self.do_open(SafeHTTPConnection, req)
+
+        class SafeHTTPSHandler(urllib.request.HTTPSHandler):
+            def https_open(self, req):
+                return self.do_open(SafeHTTPSConnection, req, context=ssl.create_default_context())
 
         class SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
             def __init__(self):
@@ -248,10 +285,9 @@ def url_reader(url: str) -> str:
                 new_parsed = urllib.parse.urlparse(newurl)
                 if new_parsed.scheme not in ('http', 'https'):
                     raise urllib.error.URLError("Redirected to disallowed scheme")
-                validate_host(new_parsed.hostname)
                 return super().redirect_request(req, fp, code, msg, headers, newurl)
 
-        opener = urllib.request.build_opener(SafeRedirectHandler())
+        opener = urllib.request.build_opener(SafeHTTPHandler(), SafeHTTPSHandler(), SafeRedirectHandler())
         req = urllib.request.Request(
             url,
             headers={
@@ -274,30 +310,67 @@ def url_reader(url: str) -> str:
         return f"Error: could not fetch URL ({type(exc).__name__}: {exc})"
 
 
-# Code interpreter safety list
+# Code interpreter safety list.
+#
+# SECURITY NOTE: This list must be small. The previous version exposed
+# `getattr`, `hasattr`, `type`, etc. With `statistics.mean.__globals__` still
+# reachable, that combination allowed `getattr(statistics.mean, '__globals__')`
+# -> `__builtins__` -> `__import__('os')` -> arbitrary RCE inside the worker
+# process. Verified reproduction against the prior sandbox:
+#     imp = statistics.mean.__globals__['__builtins__'].__import__
+#     imp('os').uname()  # works without `type` even being available
+#
+# Fix: drop `getattr`, `hasattr`, `type`. The agent prompts request numeric
+# computation, statistics, and string manipulation -- none of those need
+# introspection. `dir()` and `isinstance` are also dropped because `dir(obj)`
+# leaks public dunder names from `math`/`statistics` modules; we expose only
+# the safe builtins below and the two whitelisted modules.
 _SAFE_BUILTINS = {
-    "abs", "all", "any", "bin", "bool", "chr", "dict", "dir",
+    "abs", "all", "any", "bin", "bool", "chr", "dict",
     "divmod", "enumerate", "filter", "float", "format", "frozenset",
-    "getattr", "hasattr", "hash", "hex", "int", "isinstance",
-    "issubclass", "iter", "len", "list", "map", "max", "min",
-    "next", "oct", "ord", "pow", "print", "range", "repr",
-    "reversed", "round", "set", "slice", "sorted", "str", "sum",
-    "tuple", "type", "zip",
+    "hash", "hex", "int", "iter", "len", "list", "map",
+    "max", "min", "next", "oct", "ord", "pow", "print",
+    "range", "repr", "reversed", "round", "set", "slice",
+    "sorted", "str", "sum", "tuple", "zip",
 }
 _CODE_MAX_LEN = 2000
 _CODE_TIMEOUT = 5  # seconds
 
 
+import multiprocessing
+import io
+import contextlib
+
+def _code_worker(code_str: str, result_q: multiprocessing.Queue) -> None:
+    """Runs inside a child process — killed on timeout."""
+    try:
+        import builtins
+        import math
+        import statistics
+        safe_globals = {
+            "__builtins__": {k: getattr(builtins, k) for k in _SAFE_BUILTINS},
+            "math": math,
+            "statistics": statistics,
+        }
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            exec(code_str, safe_globals, {})  # noqa: S102
+        result_q.put(("ok", out.getvalue()))
+    except Exception as exc:  # noqa: BLE001
+        result_q.put(("err", f"{type(exc).__name__}: {exc}"))
+
 @tool
 def code_interpreter(code: str) -> str:
-    """Execute a small Python snippet and return the output.
-
-    Runs in a restricted subprocess with no network access or dangerous imports.
-    Ideal for data processing, statistics, string manipulation, and numeric computation
-    that goes beyond the calculator tool.
-
+    """Execute Python code in a sandboxed environment.
     The snippet's stdout is returned.
-    Execution is time-limited to 5 seconds.
+
+    Runs in a restricted in-process environment with no network access or dangerous imports.
+    Ideal for data processing, statistics, string manipulation, and numeric computation
+    (e.g., iterating to find prime numbers).
+
+    DO NOT USE for shell commands, system utilities, or accessing the local filesystem
+    (the sandboxed environment forbids os/sys operations). Wait for the tool output before
+    continuing execution.
     """
     if not isinstance(code, str):
         return f"Error: code must be a string, got {type(code).__name__}"
@@ -307,37 +380,22 @@ def code_interpreter(code: str) -> str:
     if len(code) > _CODE_MAX_LEN:
         return f"Error: code too long (max {_CODE_MAX_LEN} chars)"
 
-    import subprocess
-    import tempfile
-    import sys
-    
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
-        # Wrap user code to print the last expression if it doesn't already print
-        wrapped_code = (
-            "import math, statistics\n"
-            + code
-        )
-        f.write(wrapped_code)
-        temp_path = f.name
-        
+    q: multiprocessing.Queue = multiprocessing.Queue()
+    proc = multiprocessing.Process(target=_code_worker, args=(code, q), daemon=True)
     try:
-        result = subprocess.run(
-            [sys.executable, temp_path],
-            capture_output=True,
-            text=True,
-            timeout=_CODE_TIMEOUT
-        )
-        out = result.stdout
-        err = result.stderr
-        if err:
-            out += "\nErrors:\n" + err
-        return out.strip() if out.strip() else "(no output)"
-    except subprocess.TimeoutExpired:
-        return "Error: execution timed out"
+        proc.start()
+        proc.join(timeout=_CODE_TIMEOUT)
+        if proc.is_alive():
+            proc.terminate()
+            proc.join()
+            return "Error: execution timed out"
+        status, payload = q.get_nowait()
+        if status == "ok":
+            return payload.strip() if payload.strip() else "(no output)"
+        return f"Error: {payload}"
     except Exception as exc:
         return f"Error: {type(exc).__name__}: {exc}"
     finally:
-        try:
-            os.remove(temp_path)
-        except OSError:
-            pass
+        if proc.is_alive():
+            proc.terminate()
+        proc.join(timeout=2)

@@ -13,6 +13,8 @@ Reference: DESIGN_DOC.md section 6 "RAG Pipeline", TECH_STACK.md section 4
 "Retrieval / RAG".
 """
 
+import hashlib
+import logging
 import os
 import threading
 from collections import OrderedDict
@@ -26,6 +28,7 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 from backend.validation import validate_thread_id
 
+logger = logging.getLogger("agentflow.rag.ingest")
 
 INDEX_ROOT = Path(__file__).resolve().parent.parent.parent / "faiss_indexes"
 
@@ -34,6 +37,8 @@ INDEX_ROOT = Path(__file__).resolve().parent.parent.parent / "faiss_indexes"
 # Render / Railway free-tier 512MB containers.
 _EMBED_MODEL = "BAAI/bge-small-en-v1.5"
 _EMBEDDINGS: FastEmbedEmbeddings | None = None
+_EMBEDDINGS_LOCK = threading.Lock()
+_EMBEDDINGS_WARM = False  # public read-only flag for /readyz short-circuit
 _RETRIEVERS: OrderedDict[str, Any] = OrderedDict()
 _MAX_RETRIEVERS = 1000
 _MAX_RETRIEVER_LOCKS = 1000
@@ -47,19 +52,38 @@ def warm_embeddings() -> None:
 
 
 def _get_embeddings() -> FastEmbedEmbeddings:
-    global _EMBEDDINGS
-    if _EMBEDDINGS is None:
-        _EMBEDDINGS = FastEmbedEmbeddings(model_name=_EMBED_MODEL)
-    return _EMBEDDINGS
+    global _EMBEDDINGS, _EMBEDDINGS_WARM
+    # Fast path: already initialised. Avoid lock acquire on the hot path.
+    if _EMBEDDINGS is not None:
+        return _EMBEDDINGS
+    # Double-checked locking: under the lock, re-check the flag before
+    # instantiating, otherwise concurrent first-time callers would all
+    # load the (large) FastEmbed model and stomp each other.
+    with _EMBEDDINGS_LOCK:
+        if _EMBEDDINGS is None:
+            _EMBEDDINGS = FastEmbedEmbeddings(model_name=_EMBED_MODEL)
+            _EMBEDDINGS_WARM = True
+        return _EMBEDDINGS
 
 
 def _index_dir(thread_id: str) -> Path:
-    # thread_id may be the scoped form "user:<username>:<tid>" which
-    # contains colons. SQLite handles colons fine but Windows can't use
-    # them in directory names — replace with the closest legal char so
-    # FAISS indexes still live under a per-user, per-thread path.
-    safe = thread_id.replace(":", "_")
-    return INDEX_ROOT / safe
+    """Return the index directory for *thread_id*.
+
+    Uses a SHA-256 hash of the full thread_id so that colons, slashes,
+    or other path-special characters cannot escape INDEX_ROOT, and so
+    that the resulting directory name is safe on all platforms.
+    The resolved path is verified to stay within INDEX_ROOT.
+    """
+    safe = hashlib.sha256(thread_id.encode("utf-8")).hexdigest()
+    idx_dir = INDEX_ROOT / safe
+    # Defensive: resolve and confirm containment (guards against symlink attacks)
+    try:
+        resolved = idx_dir.resolve()
+        INDEX_ROOT.resolve()
+        resolved.relative_to(INDEX_ROOT.resolve())
+    except ValueError:
+        raise ValueError(f"Index path escapes INDEX_ROOT: {idx_dir}")
+    return idx_dir
 
 
 def _faiss_index_files_valid(index_path: Path) -> bool:
@@ -76,12 +100,37 @@ def _faiss_index_files_valid(index_path: Path) -> bool:
         return False
 
 
+def _write_model_tag(index_path: Path) -> None:
+    """Persist the embedding model name alongside the index."""
+    (index_path / "embed_model.txt").write_text(_EMBED_MODEL, encoding="utf-8")
+
+
+def _check_model_tag(index_path: Path) -> bool:
+    """Return True if the stored model tag matches _EMBED_MODEL."""
+    tag_file = index_path / "embed_model.txt"
+    if not tag_file.exists():
+        # Legacy index without a tag — assume compatible (back-compat).
+        return True
+    return tag_file.read_text(encoding="utf-8").strip() == _EMBED_MODEL
+
+
 def _load_faiss_index(index_path: Path) -> FAISS:
     if not _faiss_index_files_valid(index_path):
         raise FileNotFoundError(f"incomplete FAISS index at {index_path}")
-    from backend.security import verify_file
-    if not verify_file(index_path / "index.pkl"):
-        raise ValueError(f"Integrity check failed for {index_path}/index.pkl")
+    from backend.security import verify_file, sign_file
+    pkl_path = index_path / "index.pkl"
+    hmac_path = index_path / "index.pkl.hmac"
+    if not verify_file(pkl_path):
+        if not hmac_path.exists():
+            logger.info("Legacy FAISS index detected, backfilling HMAC signature")
+            sign_file(pkl_path)
+        else:
+            raise ValueError(f"Integrity check failed for {index_path}/index.pkl")
+    if not _check_model_tag(index_path):
+        raise ValueError(
+            f"Embedding model mismatch for index at {index_path}. "
+            "Delete the index directory to rebuild with the current model."
+        )
     return FAISS.load_local(
         str(index_path),
         _get_embeddings(),
@@ -140,6 +189,7 @@ def ingest_pdf(
         index.save_local(str(out))
         from backend.security import sign_file
         sign_file(out / "index.pkl")
+        _write_model_tag(out)
         _RETRIEVERS.pop(thread_id, None)
 
     document_id = f"{basename}:{len(chunks)}"

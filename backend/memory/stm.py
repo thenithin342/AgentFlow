@@ -61,13 +61,21 @@ def compress_messages(messages: list, llm) -> str:
 
     # Build a compact transcript for the compressor prompt.
     lines: list[str] = []
-    for m in messages:
+    total_len = 0
+    for m in reversed(messages):
         role = _msg_type(m) or "unknown"
         label = {"human": "User", "ai": "Assistant", "system": "System"}.get(role, role.title())
         c = get_msg_content(m)
         content = c if isinstance(c, str) else str(c)
-        if content.strip():
-            lines.append(f"{label}: {content.strip()}")
+        content = content.strip()
+        if content:
+            if len(content) > 500:
+                content = content[:500] + "...[truncated]"
+            lines.insert(0, f"{label}: {content}")
+            total_len += len(content)
+            if total_len > 8000:
+                lines.insert(0, "...[transcript truncated]")
+                break
 
     transcript = "\n".join(lines)
     if not transcript:
@@ -104,7 +112,9 @@ def build_stm_prefix(summary: str) -> SystemMessage | None:
         return None
     text = (
         "## Conversation context (earlier messages summarised)\n"
-        f"{summary}\n\n"
+        "<context>\n"
+        f"{summary}\n"
+        "</context>\n\n"
         "---\n"
         "The above is a summary of earlier turns. The recent messages below are verbatim."
     )

@@ -1,4 +1,4 @@
-# Render Blueprint — deploys AgentFlow backend as a free web service.
+# Render Blueprint — deploys AgentFlow backend as a web service.
 # Reference: https://render.com/docs/blueprint-spec
 #
 # Usage: Push this file to the repo root. On render.com, click
@@ -6,6 +6,10 @@
 #
 # The free instance has 512 MB RAM. We use fastembed (ONNX, ~80 MB)
 # instead of sentence-transformers (PyTorch, ~350 MB) to stay within budget.
+#
+# IMPORTANT: AgentFlow writes to local files (SQLite DB, FAISS indexes, LTM
+# indexes, HMAC secret). Render's ephemeral filesystem wipes these on every
+# deploy. A persistent disk is required for any durable state.
 
 services:
   - type: web
@@ -19,19 +23,34 @@ services:
 
     healthCheckPath: /healthz
 
+    # Persistent disk — mounts at /opt/render/project/data so all state
+    # (SQLite DB, FAISS indexes, LTM indexes, HMAC secret) survives deploys.
+    # NOTE: Persistent disks are not available on the free plan; upgrade to
+    # Starter or higher, or use an external database (Postgres via Render).
+    disk:
+      name: agentflow-data
+      mountPath: /opt/render/project/data
+      sizeGB: 1
+
     envVars:
       - key: ENVIRONMENT
-        value: dev           # "dev" skips the JWT_SECRET required-in-prod check
+        value: production   # enables JWT_SECRET required-in-prod check
 
       - key: CHECKPOINT_DB_PATH
-        value: /tmp/agentflow.db
+        value: /opt/render/project/data/agentflow.db
 
       - key: DATA_DIR
-        value: /tmp/data
+        value: /opt/render/project/data/data
+
+      - key: FAISS_INDEX_DIR
+        value: /opt/render/project/data/faiss_indexes
+
+      - key: LTM_INDEX_DIR
+        value: /opt/render/project/data/ltm_indexes
 
       # ---- Secrets: set these in the Render dashboard (not here) ----
       - key: JWT_SECRET
-        sync: false          # prompt in Render UI
+        sync: false          # prompt in Render UI — required in production
 
       - key: GROQ_API_KEY
         sync: false
@@ -43,7 +62,7 @@ services:
         sync: false
 
       - key: ADMIN_PASSWORD
-        sync: false
+        sync: false          # set a strong value; required for admin bootstrap
 
       - key: CORS_ORIGINS
-        sync: false          # set to your Vercel frontend URL
+        sync: false          # set to your Vercel/Netlify frontend URL

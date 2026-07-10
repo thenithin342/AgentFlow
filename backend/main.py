@@ -37,6 +37,7 @@ file is locked for the process.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import hmac
 import json
 import os
@@ -54,6 +55,26 @@ import structlog
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
+from backend.settings import get_settings
+from backend.logging_config import configure_logging, get_logger
+
+configure_logging()
+logger = get_logger("agentflow.api")
+settings = get_settings()
+
+if settings.langchain_tracing_v2:
+    os.environ.setdefault("LANGCHAIN_TRACING_V2", "true")
+    if settings.langchain_api_key:
+        os.environ.setdefault("LANGCHAIN_API_KEY", settings.langchain_api_key)
+    if settings.langchain_project:
+        os.environ.setdefault("LANGCHAIN_PROJECT", settings.langchain_project)
+    if settings.langchain_endpoint:
+        os.environ.setdefault("LANGCHAIN_ENDPOINT", settings.langchain_endpoint)
+    logger.info(
+        "langsmith_tracing_enabled",
+        project=settings.langchain_project,
+    )
+
 from langchain_core.messages import HumanMessage
 from pydantic import BaseModel, field_validator
 from slowapi import Limiter
@@ -82,36 +103,12 @@ from backend.graph.human_review import APPROVE_SENTINEL
 from backend.graph.messages import _msg_type, content_to_str, is_human_message
 from backend.logging_config import configure_logging, get_logger
 from backend.rag.ingest import ingest_pdf, warm_embeddings
+from backend.rag.ingest import _EMBEDDINGS_WARM  # flag set true after first FastEmbed load
 from backend.settings import Settings, get_settings
 from backend.validation import validate_thread_id
 
 
-# ---------------------------------------------------------------------------
-# Logging + settings bootstrap
-# ---------------------------------------------------------------------------
-
-configure_logging()
-logger = get_logger("agentflow.api")
-settings = get_settings()
-
-
-# ---------------------------------------------------------------------------
-# LangSmith wiring — must run before any LangChain imports
-# ---------------------------------------------------------------------------
-
-if settings.langchain_tracing_v2:
-    os.environ.setdefault("LANGCHAIN_TRACING_V2", "true")
-    if settings.langchain_api_key:
-        os.environ.setdefault("LANGCHAIN_API_KEY", settings.langchain_api_key)
-    if settings.langchain_project:
-        os.environ.setdefault("LANGCHAIN_PROJECT", settings.langchain_project)
-    if settings.langchain_endpoint:
-        os.environ.setdefault("LANGCHAIN_ENDPOINT", settings.langchain_endpoint)
-    logger.info(
-        "langsmith_tracing_enabled",
-        project=settings.langchain_project,
-    )
-
+# Langsmith was moved above
 
 # ---------------------------------------------------------------------------
 # Rate limiting
@@ -166,6 +163,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             await checkpointer.setup()
         except Exception:
             logger.warning("checkpointer_setup_postgres_failed", exc_info=True)
+            raise
         try:
             app.state.checkpointer_cm = checkpointer_cm
             app.state.checkpointer = checkpointer
@@ -256,8 +254,11 @@ async def request_context(request: Request, call_next):
     req_id = request.headers.get("X-Request-ID", _uuid_mod.uuid4().hex)
     structlog.contextvars.bind_contextvars(request_id=req_id, path=request.url.path)
     start = _time.perf_counter()
+    status_code = 500  # default if the handler raises before binding `response`
     try:
         response = await call_next(request)
+        status_code = response.status_code
+        return response
     except Exception:
         logger.exception("request_unhandled_error")
         raise
@@ -266,12 +267,16 @@ async def request_context(request: Request, call_next):
         logger.info(
             "request_completed",
             method=request.method,
-            status_code=getattr(locals().get("response"), "status_code", 500),
+            status_code=status_code,
             duration_ms=duration_ms,
         )
         structlog.contextvars.clear_contextvars()
-    response.headers["X-Request-ID"] = req_id
-    return response
+        # `response` may be unbound if the handler raised; only stamp the
+        # header when we actually have one to return.
+        try:
+            response.headers["X-Request-ID"] = req_id
+        except UnboundLocalError:
+            pass
 
 
 @app.exception_handler(RateLimitExceeded)
@@ -357,7 +362,7 @@ def _checkpoint_id_to_iso(checkpoint_id: str | None) -> str | None:
             dt = datetime(1582, 10, 15, tzinfo=timezone.utc) + timedelta(
                 microseconds=t / 10
             )
-            return dt.isimezone().isoformat().replace("+00:00", "Z")
+            return dt.astimezone().isoformat().replace("+00:00", "Z")
     except (ValueError, AttributeError):
         pass
     return None
@@ -466,7 +471,8 @@ def _serialize_interrupt(snap) -> dict | None:
 
 
 @app.post("/auth/login")
-async def login(req: LoginRequest) -> dict:
+@limiter.limit(f"{settings.rate_limit_auth_per_minute}/minute")
+async def login(req: LoginRequest, request: Request) -> dict:
     """Exchange username/password for a JWT.
 
     Per-IP rate limiting is applied at the dependency layer (see
@@ -478,7 +484,8 @@ async def login(req: LoginRequest) -> dict:
 
     user = authenticate_user(settings, req.username, req.password)
     if not user:
-        logger.warning("login_failed", username=req.username)
+        hashed_username = hashlib.sha256(req.username.encode()).hexdigest()[:16]
+        logger.warning("login_failed", username=hashed_username)
         raise HTTPException(status_code=401, detail="invalid credentials")
 
     token = issue_token(settings, user.username)
@@ -543,8 +550,15 @@ async def readyz() -> dict:
     embeddings_ok = False
     t2 = _time.perf_counter()
     try:
-        await asyncio.to_thread(warm_embeddings)
-        embeddings_ok = True
+        # Skip the (heavy) warm_embeddings call on subsequent probes once the
+        # FastEmbed model is loaded. The flag is set inside warm_embeddings /
+        # _get_embeddings, so the first /readyz still pays the load cost and
+        # later probes only see a dict lookup. /livez is unaffected.
+        if _EMBEDDINGS_WARM:
+            embeddings_ok = True
+        else:
+            await asyncio.to_thread(warm_embeddings)
+            embeddings_ok = _EMBEDDINGS_WARM
     except Exception:
         logger.exception("readyz_embeddings_failed")
     timings["embeddings"] = round(_time.perf_counter() - t2, 4)
@@ -569,7 +583,9 @@ async def readyz() -> dict:
 
 
 @app.post("/chat")
+@limiter.limit(f"{settings.rate_limit_per_minute}/minute")
 async def chat(
+    request: Request,
     req: ChatRequest,
     user: CurrentUser = Depends(require_user),
 ) -> StreamingResponse:
@@ -682,7 +698,9 @@ async def chat(
 
 
 @app.post("/upload")
+@limiter.limit(f"{settings.rate_limit_per_minute}/minute")
 async def upload(
+    request: Request,
     thread_id: str = Form(...),
     file: UploadFile = File(...),
     user: CurrentUser = Depends(require_user),
@@ -829,7 +847,7 @@ async def list_threads(
     # The most recent checkpoint per thread is the "last seen" timestamp.
     sql = (
         "SELECT thread_id, checkpoint_id FROM checkpoints "
-        "WHERE thread_id LIKE ? "
+        "WHERE thread_id LIKE ? ESCAPE '\\' "
         "ORDER BY thread_id, checkpoint_id DESC"
     )
     # LIKE wildcards: the prefix is fixed (alnum + colons + dots), so it's
@@ -852,32 +870,34 @@ async def list_threads(
                         "thread_id": tid[len(scoped_prefix):],
                         "last_seen": _checkpoint_id_to_iso(row[1]),
                     })
-                    if len(threads) >= 100:
-                        break
         elif kind == "postgres":
-            # AsyncPostgresSaver.conn is an asyncpg.Connection (supports
-            # parametrised queries + async iteration via .fetch / .cursor).
-            fetch = getattr(db_conn, "fetch", None)
-            if fetch is None:
+            # Use psycopg3 cursor API (%s placeholders, execute+fetchall).
+            # db_conn is an asyncpg or psycopg3 connection; try psycopg3 first.
+            pg_sql = sql.replace("?", "%s").replace("ESCAPE '\\'", "")
+            execute = getattr(db_conn, "execute", None)
+            if execute is None:
+                logger.warning("list_threads_postgres_api_unavailable", user=user.username)
                 return {"threads": []}
-            rows = await fetch(sql, *sql_args)
+            cur = await execute(pg_sql, sql_args)
+            rows = await cur.fetchall()
             for row in rows:
-                tid = row["thread_id"]
+                tid = row[0]
                 if tid in seen:
                     continue
                 seen.add(tid)
                 threads.append({
                     "thread_id": tid[len(scoped_prefix):],
-                    "last_seen": _checkpoint_id_to_iso(row["checkpoint_id"]),
+                    "last_seen": _checkpoint_id_to_iso(row[1]),
                 })
-                if len(threads) >= 100:
-                    break
         else:
             return {"threads": []}
     except Exception:
         logger.exception("list_threads_failed", user=user.username)
         raise HTTPException(status_code=500, detail="internal server error")
-    return {"threads": threads}
+
+    # Sort by recency (most recent first) and cap at 100.
+    threads.sort(key=lambda t: t["last_seen"] or "", reverse=True)
+    return {"threads": threads[:100]}
 
 
 @app.get("/threads/{thread_id}/history")
@@ -1022,7 +1042,10 @@ async def delete_thread(
                     deleted_checkpoints = await cp.adelete_thread(scoped)
                 else:
                     # Fallback: clear via raw connection.
-                    pass
+                    await cp.conn.execute("DELETE FROM checkpoints WHERE thread_id = $1", scoped)
+                    await cp.conn.execute("DELETE FROM checkpoint_blobs WHERE thread_id = $1", scoped)
+                    await cp.conn.execute("DELETE FROM checkpoint_writes WHERE thread_id = $1", scoped)
+                    deleted_checkpoints = 1
         else:
             async with aiosqlite.connect(settings.checkpoint_db_path, timeout=5.0) as db:
                 cursor = await db.execute(
@@ -1038,7 +1061,7 @@ async def delete_thread(
         from backend.rag.ingest import INDEX_ROOT
         idx_path = INDEX_ROOT / scoped
         if idx_path.is_dir():
-            await asyncio.to_thread(shutil.rmtree, str(idx_path), ignore_errors=True)
+            await asyncio.to_thread(shutil.rmtree, str(idx_path))
             deleted_faiss = True
     except Exception:
         logger.warning("delete_thread_faiss_failed", thread_id=scoped)

@@ -12,8 +12,11 @@ export function parseSSEPayload(rawPayload) {
   if (payload.startsWith("[ERROR]")) return { kind: "error", value: payload };
 
   if (payload.startsWith("[SOURCES:") && payload.endsWith("]")) {
-    const n = parseInt(payload.slice(9, -1), 10);
-    if (Number.isFinite(n) && n >= 0) return { kind: "sources", value: n };
+    const numStr = payload.slice(9, -1);
+    if (/^\d+$/.test(numStr)) {
+      const n = parseInt(numStr, 10);
+      if (Number.isFinite(n) && n >= 0) return { kind: "sources", value: n };
+    }
     return { kind: "skip" };
   }
 

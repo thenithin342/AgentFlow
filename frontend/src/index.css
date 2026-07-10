@@ -537,7 +537,9 @@ body {
   transition: opacity 0.15s, color 0.15s;
   line-height: 1;
 }
-.af-thread-item:hover .af-thread-delete-btn { opacity: 1; }
+.af-thread-item:hover .af-thread-delete-btn,
+.af-thread-item:focus-within .af-thread-delete-btn,
+.af-thread-delete-btn:focus-visible { opacity: 1; }
 .af-thread-delete-btn:hover { color: var(--af-error); }
 
 /* ----- Memory badges ----- */

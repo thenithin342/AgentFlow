@@ -66,6 +66,11 @@ server {
 
     location /api/ {
         proxy_pass http://backend:8000/;
+        proxy_http_version 1.1;
+        proxy_set_header Connection '';
+        proxy_buffering off;
+        proxy_cache off;
+        client_max_body_size 20m;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_read_timeout 300s; # Increase timeout for long LLM responses
@@ -84,6 +89,7 @@ services:
       dockerfile: backend.Dockerfile
     volumes:
       - ./agentflow.db:/app/agentflow.db
+      - ./.faiss_secret:/app/.faiss_secret
       - ./ltm_indexes:/app/ltm_indexes
     env_file:
       - .env
@@ -103,11 +109,15 @@ services:
 ### 3. Deploy to the Server
 1. Clone your repository onto the VM.
 2. Create your `.env` file on the server with your production keys (e.g., `OPENAI_API_KEY`).
-3. Run the following command in the root directory:
+3. Prepare empty persistent files for the mounts:
+   ```bash
+   touch agentflow.db .faiss_secret
+   ```
+4. Run the following command in the root directory:
    ```bash
    docker-compose up -d --build
    ```
-4. The app is now running on your server's public IP address.
+5. The app is now running on your server's public IP address.
 
 ---
 
@@ -152,11 +162,17 @@ Optional: `LANGSMITH_API_KEY`, `LANGSMITH_TRACING=true` for trace
 capture; `GROQ_API_KEY_2`, `GROQ_API_KEY_3` for key rotation.
 
 ### Step 4 — Add a persistent volume
-The default container filesystem is ephemeral. For durable FAISS /
-LTM indexes:
+The default container filesystem is ephemeral. For durable state (SQLite DB,
+FAISS indexes, LTM indexes, and the HMAC integrity secret):
 1. Backend service → **Settings → Volumes → New Volume**.
-2. Mount path: `/app/data` (covers `faiss_indexes/` and `ltm_indexes/`
-   via the defaults in `backend/settings.py`).
+2. Create separate mounts for the required directories/files, or a single
+   mount at `/app/data` if you configure `FAISS_INDEX_DIR`, `LTM_INDEX_DIR`,
+   and `CHECKPOINT_DB_PATH` to point inside `/app/data` via environment
+   variables. By default in the provided configurations, mount:
+   - `/app/data` (for SQLite DB and general data)
+   - `/app/faiss_indexes` (FAISS FAISS indexes)
+   - `/app/ltm_indexes` (Long-Term Memory)
+   - `/app/.faiss_secret` (HMAC secret for index integrity)
 
 ### Step 5 — Deploy
 Push to `main`. Railway builds the Docker image, runs the healthcheck
@@ -210,7 +226,9 @@ Because AgentFlow writes to local files (`agentflow.db` and `ltm_indexes`), **yo
 ### 3. Auth & secrets
 The frontend shows a login screen that posts to `POST /auth/login` and stores the resulting JWT in `localStorage`. Every API call then sends `Authorization: Bearer <jwt>`. The backend's `backend/auth.py:require_user` enforces it; the `/auth/login` endpoint itself is the only public path (see `PUBLIC_PATHS` in `backend/main.py`).
 
-**Bootstrap the first admin user.** On first run, `backend/auth.py:ensure_admin` creates a user named `admin` (from `ADMIN_USERNAME`) with the password from `ADMIN_PASSWORD`. If `ADMIN_PASSWORD` is unset, a random 16-char password is generated and **printed to the server log** — copy it from the boot logs and change it immediately. The store is a JSON file at `${DATA_DIR}/users.json`; mount `DATA_DIR` on a persistent disk or you'll lose users on every restart.
+**Bootstrap the first admin user.** On first run, `backend/auth.py:ensure_admin` creates a user named `admin` (from `ADMIN_USERNAME`) with the password from `ADMIN_PASSWORD`. **You MUST set `ADMIN_PASSWORD` in your production environment before deploying.** If `ADMIN_PASSWORD` is unset or set to a known weak default (like "changeme"), the backend will refuse to start in production to protect you from deploying with an insecure default. The store is a JSON file at `${DATA_DIR}/users.json`; mount `DATA_DIR` on a persistent disk or you'll lose users on every restart.
+
+**Password Rotation:** Changing `ADMIN_PASSWORD` in the environment does *not* change the password for an existing user (it only affects the initial bootstrap). To rotate an existing user's password, run `python -c "from backend.auth import hash_password; print(hash_password('new-pass'))"` locally, and paste the hash into your production `data/users.json`.
 
 **Required env vars for production:**
 | Name | Why |
@@ -230,6 +248,6 @@ python -c "from backend.auth import hash_password; print(hash_password('your-pas
 Paste the resulting bcrypt hash into `data/users.json` under a new username key. (For a more user-friendly flow, wire up an admin-only `/auth/users` POST in a follow-up.)
 
 ### Security Reminders for Deployment:
-- **Enable Auth**: Make sure your `API_KEY` environment variable is set to a strong, secure value in your production `.env` so the `backend/security.py` middleware protects your endpoints.
+- **Enable Auth**: Endpoints are protected by JWT tokens. Use the `/auth/login` endpoint to exchange your credentials for a token, or provide a static API key via the `X-API-Key` header (defined in `backend/auth.py`'s `require_user` middleware).
 - **HTTPS**: If using Option 1, use an Nginx reverse proxy with `certbot` to provision free SSL certificates via Let's Encrypt so traffic is encrypted.
 - **Timeouts**: LLMs can take time to respond, especially the blog agent. Ensure your reverse proxy (Nginx or PaaS) has a high timeout limit (e.g., 5 minutes).

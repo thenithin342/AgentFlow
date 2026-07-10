@@ -55,11 +55,15 @@ export default function LoginScreen({ onSuccess }) {
         setError("server returned no token");
         return;
       }
-      setToken(data.access_token);
-      // Sanity: make sure the payload is decodable before we commit.
+      // Decode and validate before persisting — reject missing sub.
       const payload = decodeToken(data.access_token);
       if (!payload?.sub) {
         setError("server returned a malformed token");
+        return;
+      }
+      const stored = setToken(data.access_token);
+      if (!stored) {
+        setError("could not save session (storage unavailable — check browser settings)");
         return;
       }
       onSuccess?.(data.access_token, payload.sub);

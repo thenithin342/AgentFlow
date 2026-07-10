@@ -29,6 +29,7 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import secrets
 import time
 from dataclasses import dataclass
@@ -45,6 +46,18 @@ from backend.settings import Settings, get_settings
 
 
 _bearer = HTTPBearer(auto_error=False)
+
+# Username charset: letters/digits/._- only, 1..64 chars.
+# Used to keep user_id safe for filesystem paths and SQLite keys, mirroring
+# the THREAD_ID_RE in backend/validation.py.
+_USERNAME_RE = re.compile(r"^[A-Za-z0-9_.\-]{1,64}$")
+
+def _validate_username(username: str) -> str:
+    """Raise ValueError if username is not a safe identifier."""
+    if not isinstance(username, str) or not _USERNAME_RE.fullmatch(username):
+        got = username if isinstance(username, str) else type(username).__name__
+        raise ValueError(f"invalid username: must match [A-Za-z0-9._-]{{1,64}} (got {got!r})")
+    return username
 
 
 def hash_password(plain: str) -> str:
@@ -82,8 +95,8 @@ def _load_users(settings: Settings) -> dict[str, UserRecord]:
         return {}
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return {}
+    except (json.JSONDecodeError, OSError) as e:
+        raise RuntimeError(f"User store corrupted or unreadable: {e}")
     return {
         u: UserRecord(username=u, password_hash=h["password_hash"], created_at=h.get("created_at", 0.0))
         for u, h in raw.items()
@@ -109,9 +122,14 @@ def ensure_admin(settings: Settings) -> None:
     users = _load_users(settings)
     if users:
         return
+    
+    if not settings.admin_password and settings.is_production:
+        raise RuntimeError("ADMIN_PASSWORD must be set in production environment")
+        
     pwd = settings.admin_password or secrets.token_urlsafe(16)
-    users[settings.admin_username] = UserRecord(
-        username=settings.admin_username,
+    admin_user = _validate_username(settings.admin_username)
+    users[admin_user] = UserRecord(
+        username=admin_user,
         password_hash=hash_password(pwd),
         created_at=time.time(),
     )
@@ -127,8 +145,15 @@ def ensure_admin(settings: Settings) -> None:
 
 
 def authenticate_user(settings: Settings, username: str, password: str) -> Optional[UserRecord]:
+    # Reject malformed usernames up front so a bad lookup key never reaches
+    # the user store (defence in depth alongside the login handler's length
+    # cap in main.py).
+    try:
+        safe_username = _validate_username(username)
+    except ValueError:
+        return None
     users = _load_users(settings)
-    rec = users.get(username)
+    rec = users.get(safe_username)
     if not rec:
         return None
     if not verify_password(password, rec.password_hash):
@@ -222,6 +247,8 @@ def require_user(
         return CurrentUser(username="anonymous", source="public")
 
     token = creds.credentials if creds else None
+    if not token:
+        token = request.headers.get("X-API-Key")
 
     if token:
         # Try JWT first.
@@ -252,7 +279,13 @@ def make_thread_id(user: CurrentUser, thread_id: str) -> str:
     Format: `user:<username>:<thread_id>`. The `user:` prefix keeps the
     namespace distinct from any future tenant_id scheme.
     """
-    # Sanitise the input to keep the composed id safe to use in file
-    # paths and SQLite keys.
+    # Sanitise both segments: usernames are validated against _USERNAME_RE
+    # (defence in depth) and thread_ids are restricted to the same safe
+    # charset used by validate_thread_id. This prevents `..` or path
+    # separators from ever escaping INDEX_ROOT / LTM_ROOT, even if a
+    # tampered JWT claim reaches us with a hostile `sub` field.
+    safe_user = _validate_username(user.username)
     safe = "".join(c for c in thread_id if c.isalnum() or c in "-_.")
-    return f"user:{user.username}:{safe}"
+    if not safe:
+        raise ValueError("thread_id contains no safe characters")
+    return f"user:{safe_user}:{safe}"

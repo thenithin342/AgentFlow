@@ -19,7 +19,6 @@ import re
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from backend.graph.messages import content_to_str
-from backend.llm import llm_fast
 from backend.graph.state import AgentState
 
 
@@ -148,6 +147,7 @@ def _parse_label(text: str) -> str:
 
 def _route_for_message(user_text: str) -> str:
     """Classify a single user message via the router LLM (no cross-request cache)."""
+    from backend.llm import llm_fast  # lazy — deferred until first call
     response = llm_fast.invoke(
         [
             SystemMessage(content=ROUTER_SYSTEM_PROMPT),

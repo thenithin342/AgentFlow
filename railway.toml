@@ -8,7 +8,7 @@
 # from a freshly-inferred requirements.txt on every push.
 #
 # One service = one container = one public URL. Scale by bumping
-# `replicas` (Railway load-balances across them; Postgres checkpointer
+# numReplicas (Railway load-balances across them; Postgres checkpointer
 # is safe to share because LangGraph checkpoints are atomic per-thread).
 
 [build]
@@ -29,28 +29,25 @@ startCommand = "uvicorn backend.main:app --host 0.0.0.0 --port $PORT --workers 1
 startupSleepSecs = 0
 restartPolicyType = "ON_FAILURE"
 restartPolicyMaxRetries = 5
-
-# 1 worker is the safe default — Postgres checkpointer is shared, but
-# in-process state (sentence-transformer model, FAISS indexes) doubles
-# memory per worker. Scale by adding replicas, not workers.
-[deploy.workers]
-count = 1
-cpu = 1
-memory = 1536
+# 1 replica is the safe default — in-process state (sentence-transformer
+# model, FAISS indexes) doubles memory per replica.
+numReplicas = 1
 
 # Production environment baseline. Real secrets are set in the
 # Railway dashboard / `railway variables` CLI, NOT committed here.
 # `ENVIRONMENT=production` flips the pydantic-settings validator into
 # strict mode (JWT_SECRET becomes required, fail-fast at startup).
-[env]
-ENVIRONMENT = "production"
-LOG_LEVEL = "info"
-CORS_ORIGINS = "http://localhost:5173"  # REPLACE in Railway UI with your frontend URL
-HOST = "0.0.0.0"
+#
+# NOTE: Railway's [env] table is not officially supported in railway.toml.
+# Set these variables via the Railway dashboard or `railway variables set`:
+#   ENVIRONMENT=production
+#   LOG_LEVEL=info
+#   CORS_ORIGINS=https://your-frontend.up.railway.app
+#   HOST=0.0.0.0
+#
 # POSTGRES_CONN_STRING is injected automatically by Railway when a
 # Postgres plugin is attached to this service — do not set it manually.
 # DATA_DIR / FAISS_INDEX_DIR / LTM_INDEX_DIR default to the paths the
 # Dockerfile creates, which are the same paths the named volumes mount
-# in docker-compose.yml. On Railway, the data is ephemeral by default;
-# add a Railway volume mounted at /app/data, /app/faiss_indexes, and
-# /app/ltm_indexes to make it durable.
+# in docker-compose.yml. On Railway, add volumes mounted at:
+#   /app/data, /app/faiss_indexes, /app/ltm_indexes, /app/.faiss_secret

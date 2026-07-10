@@ -20,7 +20,7 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import List, Literal, Optional
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -54,6 +54,14 @@ class Settings(BaseSettings):
     @classmethod
     def _strip_cors(cls, v: str) -> str:
         return v.strip()
+
+    @model_validator(mode="after")
+    def _validate_cors_for_prod(self):
+        if self.environment == "production":
+            for origin in self.cors_origins.split(","):
+                if origin.strip() == "*":
+                    raise ValueError("Wildcard CORS origins ('*') are not allowed in production")
+        return self
 
     # ---- Persistence ----
     # If `postgres_conn_string` is set we use PostgresSaver; otherwise we

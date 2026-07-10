@@ -14,7 +14,7 @@
 # 1.x prefer 3.12.
 
 [phases.setup]
-nixPkgs = ["python312", "gcc", "libgomp1"]
+nixPkgs = ["python312", "gcc", "libgomp"]
 
 [phases.install]
 cmds = [
