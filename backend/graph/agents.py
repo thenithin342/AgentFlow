@@ -48,11 +48,6 @@ from backend.graph.tools import (
     url_reader,
     code_interpreter,
 )
-# llm_fast is imported lazily inside each agent function to avoid
-# triggering Groq key validation at module import time (breaks CI without key).
-# (Hoisted from inline in research/analysis/chat ? inline `from` between
-# function-call args raised SyntaxError and broke module import.)
-from backend.llm import llm_fast
 
 
 # --- URL extraction --------------------------------------------------------
@@ -319,6 +314,7 @@ def research_agent_node(state: AgentState, config: RunnableConfig) -> dict:
     """
     thread_id = _thread_id_from_config(config)
     tool = make_retrieve_documents_tool(thread_id)
+    from backend.llm import llm_fast
     agent = _get_cached_agent(
         [tavily_search, wikipedia_search, url_reader, datetime_tool, tool],
         llm_fast,
@@ -345,6 +341,7 @@ def analysis_agent_node(state: AgentState, config: RunnableConfig) -> dict:
     """
     thread_id = _thread_id_from_config(config)
     tool = make_retrieve_documents_tool(thread_id)
+    from backend.llm import llm_fast
     agent = _get_cached_agent(
         [calculator, code_interpreter, tool],
         llm_fast,
@@ -377,6 +374,7 @@ def chat_agent_node(state: AgentState, config: RunnableConfig) -> dict:
     """
     thread_id = _thread_id_from_config(config)
     rag_tool = make_retrieve_documents_tool(thread_id)
+    from backend.llm import llm_fast
     agent = _get_cached_agent([rag_tool], llm_fast, prompt=CHAT_AGENT_PROMPT, thread_id=thread_id)
     result = agent.invoke({"messages": state["messages"]}, config=config)
     text = _output_from_messages(result["messages"])

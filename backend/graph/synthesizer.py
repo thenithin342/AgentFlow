@@ -14,7 +14,6 @@ from langchain_core.runnables import RunnableConfig
 
 from backend.graph.security import escape_untrusted
 from backend.graph.messages import content_to_str
-from backend.llm import llm_smart
 from backend.graph.state import AgentState
 
 
@@ -153,6 +152,7 @@ def synthesizer_node(state: AgentState, config: RunnableConfig) -> dict:
     """
     system_prompt = SYNTHESIZER_SYSTEM_PROMPT
 
+    from backend.llm import llm_smart
     response = llm_smart.invoke(
         [
             SystemMessage(content=system_prompt),

@@ -103,7 +103,7 @@ from backend.graph.human_review import APPROVE_SENTINEL
 from backend.graph.messages import _msg_type, content_to_str, is_human_message
 from backend.logging_config import configure_logging, get_logger
 from backend.rag.ingest import ingest_pdf, warm_embeddings
-from backend.rag.ingest import _EMBEDDINGS_WARM  # flag set true after first FastEmbed load
+import backend.rag.ingest as ingest_module  # for _EMBEDDINGS_WARM flag
 from backend.settings import Settings, get_settings
 from backend.validation import validate_thread_id
 
@@ -554,11 +554,11 @@ async def readyz() -> dict:
         # FastEmbed model is loaded. The flag is set inside warm_embeddings /
         # _get_embeddings, so the first /readyz still pays the load cost and
         # later probes only see a dict lookup. /livez is unaffected.
-        if _EMBEDDINGS_WARM:
+        if ingest_module._EMBEDDINGS_WARM:
             embeddings_ok = True
         else:
             await asyncio.to_thread(warm_embeddings)
-            embeddings_ok = _EMBEDDINGS_WARM
+            embeddings_ok = ingest_module._EMBEDDINGS_WARM
     except Exception:
         logger.exception("readyz_embeddings_failed")
     timings["embeddings"] = round(_time.perf_counter() - t2, 4)

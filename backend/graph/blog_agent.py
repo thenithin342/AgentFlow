@@ -32,7 +32,6 @@ from backend.graph.messages import (
     get_msg_content,
 )
 from backend.graph.tools import tavily_search, make_retrieve_documents_tool
-from backend.llm import llm_smart
 
 logger = logging.getLogger("agentflow.blog")
 
@@ -181,6 +180,7 @@ def blog_writer_node(state: AgentState, config: RunnableConfig) -> dict:
     thread_id = _thread_id_from_config(config)
     rag_tool = make_retrieve_documents_tool(thread_id)
 
+    from backend.llm import llm_smart
     agent = _get_cached_agent(
         [tavily_search, rag_tool],
         llm_smart,
