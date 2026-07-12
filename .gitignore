@@ -28,3 +28,4 @@ dist/
 # the default path; the env var CHECKPOINT_DB_PATH can still point it
 # somewhere else if you do want to commit a known-good fixture DB.
 agentflow.db
+diff_output.txt
