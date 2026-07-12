@@ -1,4 +1,3 @@
-import pytest
 from httpx import ASGITransport, AsyncClient
 
 from backend.main import app

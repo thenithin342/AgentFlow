@@ -38,7 +38,6 @@ from langgraph.types import interrupt
 from backend.graph.messages import content_to_str
 from backend.graph.state import AgentState
 
-
 # Non-guessable sentinel — a user who literally types "approve" as an edit
 # must NOT hit this branch. The API layer (main.py) sends this exact token;
 # any other string (including the word "approve") is treated as an edit.

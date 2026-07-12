@@ -18,14 +18,14 @@ import logging
 
 from langchain_core.runnables import RunnableConfig
 
-from backend.graph.state import AgentState
 from backend.graph.messages import content_to_str, is_human_message
+from backend.graph.state import AgentState
+from backend.memory.ltm import extract_facts, read_ltm, write_ltm
 from backend.memory.stm import (
     STM_KEEP_RECENT,
-    should_compress,
     compress_messages,
+    should_compress,
 )
-from backend.memory.ltm import read_ltm, write_ltm, extract_facts
 
 logger = logging.getLogger("agentflow.memory.nodes")
 

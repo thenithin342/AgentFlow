@@ -21,7 +21,6 @@ import structlog
 
 from backend.settings import get_settings
 
-
 _CONFIGURED = False
 
 

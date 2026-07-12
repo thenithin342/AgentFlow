@@ -1,6 +1,6 @@
 """Tool-level unit tests (no LLM)."""
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 from backend.graph.tools import tavily_search
 

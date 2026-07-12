@@ -22,11 +22,9 @@ from pathlib import Path
 from typing import Any
 
 from langchain_community.document_loaders import PyPDFLoader
-from langchain_community.vectorstores import FAISS
 from langchain_community.embeddings import FastEmbedEmbeddings
+from langchain_community.vectorstores import FAISS
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-
-from backend.validation import validate_thread_id
 
 logger = logging.getLogger("agentflow.rag.ingest")
 
@@ -117,7 +115,7 @@ def _check_model_tag(index_path: Path) -> bool:
 def _load_faiss_index(index_path: Path) -> FAISS:
     if not _faiss_index_files_valid(index_path):
         raise FileNotFoundError(f"incomplete FAISS index at {index_path}")
-    from backend.security import verify_file, sign_file
+    from backend.security import sign_file, verify_file
     pkl_path = index_path / "index.pkl"
     hmac_path = index_path / "index.pkl.hmac"
     if not verify_file(pkl_path):

@@ -37,29 +37,27 @@ section 4 "Routing Logic", section 5 "Persistence Design"
 
 import os
 import sqlite3
-from typing import Optional
 
-from langgraph.graph import StateGraph, START, END
 from langgraph.checkpoint.sqlite import SqliteSaver
+from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
-from backend.graph.state import AgentState
-from backend.graph.router import router_node, route_query
 from backend.graph.agents import (
-    research_agent_node,
     analysis_agent_node,
     chat_agent_node,
+    research_agent_node,
 )
 from backend.graph.blog_agent import blog_writer_node
-from backend.graph.synthesizer import synthesizer_node
 from backend.graph.human_review import human_review_node
 from backend.graph.memory_nodes import (
     memory_reader_node,
     memory_writer_node,
-    stm_compressor_node,
     should_run_stm,
+    stm_compressor_node,
 )
-
+from backend.graph.router import route_query, router_node
+from backend.graph.state import AgentState
+from backend.graph.synthesizer import synthesizer_node
 
 # --- Graph topology (pure — no DB, no side effects) ------------------------
 
@@ -159,7 +157,7 @@ builder.add_edge("memory_writer", END)
 _DEFAULT_DB_PATH = os.environ.get("CHECKPOINT_DB_PATH", "agentflow.db")
 
 
-def build_compiled_graph(db_path: Optional[str] = None) -> CompiledStateGraph:
+def build_compiled_graph(db_path: str | None = None) -> CompiledStateGraph:
     """Compile `builder` with a fresh sync SqliteSaver checkpointer.
 
     Args:
@@ -186,6 +184,7 @@ def build_compiled_graph(db_path: Optional[str] = None) -> CompiledStateGraph:
 # ---------------------------------------------------------------------------
 
 import threading
+
 _default_graph: CompiledStateGraph | None = None
 _default_graph_lock = threading.Lock()
 # Serializes all sync .invoke() / .stream() / .astream_events() calls into the

@@ -24,10 +24,8 @@ shows xfailed (x) instead of FAILED (F). Non-LLM tests are unaffected.
 """
 
 import os
-import re
 import shutil
 import sqlite3
-from pathlib import Path
 
 # Isolate the sync test checkpointer from the async API DB (agentflow.db).
 # Must run before build_graph is imported so _DEFAULT_DB_PATH picks this up.
@@ -40,7 +38,6 @@ import pytest
 from backend.graph import build_graph
 from backend.rag.ingest import INDEX_ROOT
 from backend.settings import get_settings
-
 
 # --- Auth fixture: shared by every API test ------------------------------
 #
@@ -57,8 +54,8 @@ from backend.settings import get_settings
 
 @pytest.fixture
 async def auth_headers(tmp_path, monkeypatch):
-    from backend import auth as auth_mod
     import backend.main as main_mod
+    from backend import auth as auth_mod
 
     settings = get_settings()
     monkeypatch.setattr(settings, "data_dir", str(tmp_path))
@@ -86,7 +83,6 @@ _DB_PATH = os.environ.get("CHECKPOINT_DB_PATH", "test_agentflow.db")
 _GROQ_TPD_MARKER = "tokens per day"
 
 from backend.validation import THREAD_ID_RE
-
 
 # --- Helpers ---------------------------------------------------------------
 
@@ -150,7 +146,7 @@ def _clean_checkpoint_db():
             shutil.rmtree(INDEX_ROOT)
         except PermissionError as exc:  # pragma: no cover — Windows-only path
             import warnings
-            warnings.warn(f"Could not clean {INDEX_ROOT}: {exc}")
+            warnings.warn(f"Could not clean {INDEX_ROOT}: {exc}", stacklevel=2)
 
     if not os.path.exists(_DB_PATH):
         # No DB yet — first run, nothing to clean. Tables are created
@@ -166,8 +162,8 @@ def _clean_checkpoint_db():
         # truncate.
         for table in ("checkpoints", "writes"):
             cur.execute(
-                f"SELECT name FROM sqlite_master "
-                f"WHERE type='table' AND name=?", (table,)
+                "SELECT name FROM sqlite_master "
+                "WHERE type='table' AND name=?", (table,)
             )
             if cur.fetchone() is not None:
                 cur.execute(f"DELETE FROM {table}")

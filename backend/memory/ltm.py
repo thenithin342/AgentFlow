@@ -24,14 +24,12 @@ deletion endpoint. Those are out of scope for this portfolio project.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
-import os
 import threading
-import hashlib
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
 
 logger = logging.getLogger("agentflow.memory.ltm")
 
@@ -166,8 +164,8 @@ def write_ltm(user_id: str, facts: list[str], source_thread_id: str = "") -> Non
         return
         
     try:
-        from langchain_core.documents import Document
         from langchain_community.vectorstores import FAISS
+        from langchain_core.documents import Document
 
         ts = datetime.now(timezone.utc).isoformat()
         docs = [
@@ -189,7 +187,8 @@ def write_ltm(user_id: str, facts: list[str], source_thread_id: str = "") -> Non
                 index.add_documents(docs)
                 
             if index.index.ntotal > LTM_MAX_FACTS:
-                all_docs = list(index.docstore._dict.values())
+                ids = list(index.index_to_docstore_id.values())
+                all_docs = [index.docstore.search(i) for i in ids if index.docstore.search(i)]
                 all_docs.sort(key=lambda d: d.metadata.get("timestamp", ""))
                 keep_docs = all_docs[-LTM_MAX_FACTS:]
                 index = FAISS.from_documents(keep_docs, _get_embeddings())

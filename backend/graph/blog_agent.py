@@ -21,17 +21,16 @@ import json
 import logging
 import re
 
-from langchain_core.messages import HumanMessage, SystemMessage, AIMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
 
-from backend.graph.state import AgentState
 from backend.graph.messages import (
     content_to_str,
-    is_tool_message,
-    is_ai_message,
+    extract_sources,
     get_msg_content,
+    is_ai_message,
 )
-from backend.graph.tools import tavily_search, make_retrieve_documents_tool
+from backend.graph.state import AgentState
+from backend.graph.tools import make_retrieve_documents_tool, tavily_search
 
 logger = logging.getLogger("agentflow.blog")
 
@@ -89,20 +88,6 @@ no extra text before or after):
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-_URL_RE = re.compile(r"https?://[^\s\)\]\\'\"<>]+")
-
-
-def _extract_sources_from_messages(messages) -> list[str]:
-    sources: list[str] = []
-    for msg in messages:
-        if is_tool_message(msg):
-            content = get_msg_content(msg)
-            if isinstance(content, str):
-                sources.extend(_URL_RE.findall(content))
-            else:
-                sources.extend(_URL_RE.findall(str(content)))
-    return list(dict.fromkeys(sources))
 
 
 def _parse_blog_json(text: str) -> dict | None:
@@ -200,7 +185,7 @@ def blog_writer_node(state: AgentState, config: RunnableConfig) -> dict:
         }
 
     result_messages = result.get("messages") or []
-    sources = _extract_sources_from_messages(result_messages)
+    sources = extract_sources(result_messages)
 
     # Extract the last AI message (the blog JSON)
     blog_text = ""

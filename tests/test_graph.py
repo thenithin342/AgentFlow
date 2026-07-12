@@ -15,7 +15,6 @@ from backend.graph.human_review import APPROVE_SENTINEL
 from backend.graph.router import router_node
 from backend.graph.synthesizer import synthesizer_node
 
-
 # Skip marker for any test that hits the real Groq API. CI runners and
 # local dev without GROQ_API_KEY set shouldn't hard-fail the whole
 # suite — they should skip with a clear reason. The conftest's
@@ -41,7 +40,7 @@ def _ensure_sample_pdf() -> str:
         return str(fp)
 
     from pypdf import PdfWriter
-    from pypdf.generic import NameObject, DictionaryObject, DecodedStreamObject
+    from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
 
     paras = [
         "The AgentFlow project was founded in 2024 by a small team of engineers.",
@@ -337,7 +336,6 @@ def test_full_graph_chat_flow_phase5():
 # --- Phase 6: Human-in-the-loop review (unit-level, no LLM) ---------------
 
 from backend.graph.human_review import (
-    APPROVE_SENTINEL,
     _normalize_resume_value,
     human_review_node,
 )
@@ -547,6 +545,7 @@ async def test_sources_in_sse(tmp_path, monkeypatch, auth_headers):
     fixture's signature so the per-test isolation stays correct."""
     from asgi_lifespan import LifespanManager
     from httpx import ASGITransport, AsyncClient
+
     from backend.main import app
 
     thread_id = "test-sources-sse-001"
@@ -597,7 +596,7 @@ THREAD_RAG = "test-rag-001"
 
 def test_ingest_pdf_creates_index():
     """ingest_pdf must write a per-thread FAISS index under faiss_indexes/."""
-    from backend.rag.ingest import ingest_pdf, _index_dir
+    from backend.rag.ingest import _index_dir, ingest_pdf
 
     sample = _ensure_sample_pdf()
     ingest_pdf(sample, THREAD_RAG)
@@ -611,8 +610,8 @@ def test_ingest_pdf_creates_index():
 def test_retrieve_documents_returns_chunks():
     """The retrieve_documents tool must return non-empty text containing
     content from the ingested PDF."""
-    from backend.rag.ingest import ingest_pdf
     from backend.graph.tools import make_retrieve_documents_tool
+    from backend.rag.ingest import ingest_pdf
 
     ingest_pdf(_ensure_sample_pdf(), THREAD_RAG)
     tool = make_retrieve_documents_tool(THREAD_RAG)
@@ -636,8 +635,8 @@ def test_retrieve_documents_handles_missing_index():
 
 def test_ingest_pdf_appends_to_existing_index():
     """Re-uploading a PDF must merge into the existing FAISS index."""
-    from backend.rag.ingest import ingest_pdf, get_retriever, _index_dir
     from backend.graph.tools import make_retrieve_documents_tool
+    from backend.rag.ingest import _index_dir, get_retriever, ingest_pdf
 
     thread = "test-rag-append-001"
     index_dir = _index_dir(thread)

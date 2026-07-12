@@ -9,13 +9,12 @@ present.
 Reference: DESIGN_DOC.md section 3 "Synthesizer"
 """
 
-from langchain_core.messages import SystemMessage, HumanMessage
+from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
 
-from backend.graph.security import escape_untrusted
 from backend.graph.messages import content_to_str
+from backend.graph.security import escape_untrusted
 from backend.graph.state import AgentState
-
 
 # --- System prompt -----------------------------------------------------------
 

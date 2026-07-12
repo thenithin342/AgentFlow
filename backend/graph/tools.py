@@ -15,15 +15,16 @@ import textwrap
 from typing import Any
 
 try:
-    from langchain_tavily import TavilySearch as _TavilyClient
+    from langchain_tavily import TavilySearch as _TavilyClient  # type: ignore[assignment]
     _USE_NEW_TAVILY = True
 except ImportError:
-    from langchain_community.tools.tavily_search import TavilySearchResults as _TavilyClient  # noqa: F401
+    from langchain_community.tools.tavily_search import (  # type: ignore[assignment]
+        TavilySearchResults as _TavilyClient,
+    )
     _USE_NEW_TAVILY = False
 from langchain_core.tools import tool
 
 from backend.graph.security import escape_untrusted
-
 
 _tavily_instance = None
 
@@ -95,11 +96,11 @@ def _eval(node: ast.AST) -> float:
                 raise ValueError(f"base magnitude too large (>{_MAX_POW_BASE})")
         return _BIN_OPS[op_type](left, right)
     if isinstance(node, ast.UnaryOp):
-        op_type = type(node.op)
-        if op_type not in _UNARY_OPS:
-            raise ValueError(f"unsupported unary operator: {op_type.__name__}")
+        unary_op_type = type(node.op)
+        if unary_op_type not in _UNARY_OPS:
+            raise ValueError(f"unsupported unary operator: {unary_op_type.__name__}")
         operand = _eval(node.operand)
-        return _UNARY_OPS[op_type](operand)
+        return _UNARY_OPS[unary_op_type](operand)
     raise ValueError(f"disallowed expression node: {type(node).__name__}")
 
 
@@ -167,9 +168,9 @@ def wikipedia_search(query: str) -> str:
     if not isinstance(query, str) or not query.strip():
         return "Error: query must be a non-empty string"
     try:
-        import urllib.request
-        import urllib.parse
         import json as _json
+        import urllib.parse
+        import urllib.request
         encoded = urllib.parse.quote(query.strip())
         url = f"https://en.wikipedia.org/api/rest_v1/page/summary/{encoded}"
         req = urllib.request.Request(
@@ -222,12 +223,12 @@ def url_reader(url: str) -> str:
         return "Error: url must start with http:// or https://"
     try:
         import http.client
-        import urllib.parse
-        import urllib.error
+        import ipaddress
         import re as _re
         import socket
-        import ipaddress
         import ssl
+        import urllib.error
+        import urllib.parse
 
         class SafeHTTPConnection(http.client.HTTPConnection):
             def _resolve_and_validate(self) -> str:
@@ -240,7 +241,7 @@ def url_reader(url: str) -> str:
                 infos = socket.getaddrinfo(self.host, self.port, type=socket.SOCK_STREAM)
                 if not infos:
                     raise ValueError(f"No DNS results for {self.host!r}")
-                for family, _type, _proto, _canon, sockaddr in infos:
+                for _family, _type, _proto, _canon, sockaddr in infos:
                     ip = sockaddr[0]
                     ip_obj = ipaddress.ip_address(ip)
                     if (ip_obj.is_private or ip_obj.is_loopback or ip_obj.is_link_local
@@ -249,7 +250,7 @@ def url_reader(url: str) -> str:
                         raise ValueError(f"Resolves to non-public IP: {ip}")
                 # Use the FIRST validated IP; subsequent A/AAAA ranswers should not
                 # bypass the check above. Re-resolving here is the bug we are fixing.
-                return infos[0][4][0]
+                return str(infos[0][4][0])
 
             def connect(self):
                 ip = self._resolve_and_validate()
@@ -337,9 +338,10 @@ _CODE_MAX_LEN = 2000
 _CODE_TIMEOUT = 5  # seconds
 
 
-import multiprocessing
-import io
 import contextlib
+import io
+import multiprocessing
+
 
 def _code_worker(code_str: str, result_q: multiprocessing.Queue) -> None:
     """Runs inside a child process — killed on timeout."""

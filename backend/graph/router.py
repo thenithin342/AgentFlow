@@ -21,7 +21,6 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from backend.graph.messages import content_to_str
 from backend.graph.state import AgentState
 
-
 logger = logging.getLogger("agentflow.router")
 
 

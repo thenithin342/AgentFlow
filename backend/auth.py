@@ -25,25 +25,20 @@ Swap for Postgres / a real auth provider when you outgrow it.
 
 from __future__ import annotations
 
-import hashlib
 import hmac
 import json
-import os
 import re
 import secrets
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
 
+import bcrypt
 import jwt
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
-import bcrypt
-
 from backend.settings import Settings, get_settings
-
 
 _bearer = HTTPBearer(auto_error=False)
 
@@ -104,13 +99,16 @@ def _load_users(settings: Settings) -> dict[str, UserRecord]:
 
 
 def _save_users(settings: Settings, users: dict[str, UserRecord]) -> None:
+    import filelock
     path = _users_file(settings)
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         u: {"password_hash": rec.password_hash, "created_at": rec.created_at}
         for u, rec in users.items()
     }
-    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    lock_path = path.with_suffix(".lock")
+    with filelock.FileLock(str(lock_path), timeout=5):
+        path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 
 def ensure_admin(settings: Settings) -> None:
@@ -144,7 +142,7 @@ def ensure_admin(settings: Settings) -> None:
         )
 
 
-def authenticate_user(settings: Settings, username: str, password: str) -> Optional[UserRecord]:
+def authenticate_user(settings: Settings, username: str, password: str) -> UserRecord | None:
     # Reject malformed usernames up front so a bad lookup key never reaches
     # the user store (defence in depth alongside the login handler's length
     # cap in main.py).
@@ -200,7 +198,7 @@ def issue_token(settings: Settings, username: str) -> str:
     return jwt.encode(payload, _signing_secret(settings), algorithm=settings.jwt_algorithm)
 
 
-def verify_token(settings: Settings, token: str) -> Optional[str]:
+def verify_token(settings: Settings, token: str) -> str | None:
     """Return the username embedded in a valid JWT, or None."""
     try:
         payload = jwt.decode(
@@ -230,7 +228,7 @@ class CurrentUser:
 
 def require_user(
     request: Request,
-    creds: Optional[HTTPAuthorizationCredentials] = Depends(_bearer),
+    creds: HTTPAuthorizationCredentials | None = Depends(_bearer),
     settings: Settings = Depends(get_settings),
 ) -> CurrentUser:
     """FastAPI dependency: validate the bearer token / API key.

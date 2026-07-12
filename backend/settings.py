@@ -18,9 +18,9 @@ Reference: DESIGN_DOC.md section 8 "Configuration"
 from __future__ import annotations
 
 from functools import lru_cache
-from typing import List, Literal, Optional
+from typing import Literal
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -67,7 +67,7 @@ class Settings(BaseSettings):
     # If `postgres_conn_string` is set we use PostgresSaver; otherwise we
     # fall back to SQLite for local dev. The path is also used for the
     # FAISS HMAC secret file location, so it must always resolve.
-    postgres_conn_string: Optional[str] = None
+    postgres_conn_string: str | None = None
     checkpoint_db_path: str = "agentflow.db"
     data_dir: str = "data"  # holds FAISS indexes + LTM indexes
 
@@ -75,16 +75,16 @@ class Settings(BaseSettings):
     # JWT settings. Secret is REQUIRED in production; if absent and
     # `environment != "production"`, a random ephemeral key is generated
     # at startup (dev convenience — all tokens invalidate on restart).
-    jwt_secret: Optional[str] = None
+    jwt_secret: str | None = None
     jwt_algorithm: str = "HS256"
     jwt_access_ttl_minutes: int = 60 * 24  # 24h
     # When set, all requests require Authorization: Bearer <key>.
     # Used as a single-user dev fallback before JWT is wired up.
-    agentflow_api_key: Optional[str] = None
+    agentflow_api_key: str | None = None
     # Bootstrap admin credentials — created on first run if no users exist.
     # Change `admin_password` immediately after first deploy.
     admin_username: str = "admin"
-    admin_password: Optional[str] = None
+    admin_password: str | None = None
 
     # ---- Rate limiting ----
     rate_limit_per_minute: int = 60
@@ -92,21 +92,21 @@ class Settings(BaseSettings):
 
     # ---- LangSmith / observability ----
     langchain_tracing_v2: bool = False
-    langchain_api_key: Optional[str] = None
+    langchain_api_key: str | None = None
     langchain_project: str = "AgentFlow"
-    langchain_endpoint: Optional[str] = None
+    langchain_endpoint: str | None = None
 
     # ---- LLM providers ----
-    groq_api_key: Optional[str] = None
-    groq_api_key_2: Optional[str] = None
-    groq_api_key_3: Optional[str] = None
-    google_api_key: Optional[str] = None
-    tavily_api_key: Optional[str] = None
+    groq_api_key: str | None = None
+    groq_api_key_2: str | None = None
+    groq_api_key_3: str | None = None
+    google_api_key: str | None = None
+    tavily_api_key: str | None = None
     agentflow_require_groq: bool = False
 
     # ---- Derived helpers ----
     @property
-    def cors_origins_list(self) -> List[str]:
+    def cors_origins_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
 
     @property

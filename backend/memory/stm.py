@@ -18,13 +18,13 @@ summarisation node.
 """
 
 from __future__ import annotations
-import json
-import logging
-from typing import Sequence, TYPE_CHECKING
 
-from backend.graph.messages import _msg_type, get_msg_content
+import logging
+from typing import TYPE_CHECKING
 
 from langchain_core.messages import SystemMessage
+
+from backend.graph.messages import _msg_type, get_msg_content
 
 if TYPE_CHECKING:
     pass

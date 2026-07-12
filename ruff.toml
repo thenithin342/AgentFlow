@@ -1,0 +1,12 @@
+target-version = "py310"
+line-length = 100
+
+[lint]
+select = ["E", "F", "I", "B", "UP"]
+ignore = [
+    "E501",   # line too long — handled by formatter
+    "E402",   # module-level import not at top — many files use intentional lazy imports
+    "B008",   # FastAPI: Depends() in function defaults is idiomatic
+    "B028",   # stacklevel in warnings — not always applicable
+    "B904",   # raise without from — acceptable in HTTP exception handlers
+]

@@ -1,10 +1,8 @@
 import hashlib
 import shutil
-from pathlib import Path
-from langchain_core.messages import AIMessage, HumanMessage
 
-from backend.memory.stm import should_compress, build_stm_prefix, STM_WINDOW
-from backend.memory.ltm import write_ltm, read_ltm, LTM_ROOT
+from backend.memory.ltm import LTM_ROOT, read_ltm, write_ltm
+from backend.memory.stm import STM_WINDOW, build_stm_prefix, should_compress
 
 
 def test_stm_should_compress():

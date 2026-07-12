@@ -20,58 +20,33 @@ Pipeline".
 """
 
 import hashlib
-import re
 from collections import OrderedDict
 from typing import Any
 
-from langchain_core.messages import AIMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
+
 # LangGraph 1.x deprecation note: the warning says to import from langchain.agents,
 # but that symbol does not exist in langchain 1.3.x yet. The prebuilt import still
 # works in LangGraph 1.x and will be updated when langchain.agents exports it.
 # Track: https://github.com/langchain-ai/langgraph/issues — revisit at Phase 8 / upgrade.
 from langgraph.prebuilt import create_react_agent
 
-from backend.graph.state import AgentState
 from backend.graph.messages import (
     content_to_str,
-    is_tool_message,
-    is_ai_message,
+    extract_sources,
     get_msg_content,
+    is_ai_message,
 )
+from backend.graph.state import AgentState
 from backend.graph.tools import (
     calculator,
+    code_interpreter,
+    datetime_tool,
     make_retrieve_documents_tool,
     tavily_search,
-    wikipedia_search,
-    datetime_tool,
     url_reader,
-    code_interpreter,
+    wikipedia_search,
 )
-
-
-# --- URL extraction --------------------------------------------------------
-
-_URL_RE = re.compile(r"https?://[^\s\)\]\"',<>]+")
-
-
-def _extract_sources(messages) -> list[str]:
-    """Pull every http(s) URL out of the ToolMessages produced by a ReAct run.
-
-    Robust to both string and list-content ToolMessage variants. Returns
-    first-seen order; duplicates are not removed (the synthesizer / UI can
-    dedupe).
-    """
-    sources: list[str] = []
-    for msg in messages:
-        if is_tool_message(msg):
-            content = get_msg_content(msg)
-            if isinstance(content, str):
-                sources.extend(_URL_RE.findall(content))
-            else:
-                sources.extend(_URL_RE.findall(str(content)))
-    return list(dict.fromkeys(sources))
-
 
 # --- Thread ID helper ------------------------------------------------------
 
@@ -116,6 +91,7 @@ def _thread_id_from_config(config: RunnableConfig) -> str:
 # retriever. Caching per (tool names, llm, prompt, thread_id) still
 # avoids redundant `create_react_agent` calls within the same thread.
 import threading
+
 _AGENT_CACHE: OrderedDict = OrderedDict()
 _MAX_AGENT_CACHE = 128
 _AGENT_CACHE_LOCK = threading.Lock()
@@ -325,7 +301,7 @@ def research_agent_node(state: AgentState, config: RunnableConfig) -> dict:
     messages = result["messages"]
     return {
         "agent_output": _output_from_messages(messages),
-        "sources": _extract_sources(messages),
+        "sources": extract_sources(messages),
     }
 
 

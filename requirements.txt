@@ -39,5 +39,6 @@ bcrypt>=4.0.0
 python-dotenv>=1.0.0
 pydantic-settings>=2.4.0
 structlog>=24.1.0
+filelock>=3.13.0
 
 # NOTE: test-only deps (pytest, pytest-asyncio) live in requirements-dev.txt.

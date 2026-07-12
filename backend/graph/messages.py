@@ -37,3 +37,23 @@ def get_msg_content(msg):
     if isinstance(msg, dict):
         return msg.get("content", "")
     return getattr(msg, "content", "")
+
+import re
+
+_URL_RE = re.compile(r"https?://[^\s\)\]\"',<>]+")
+
+def extract_sources(messages) -> list[str]:
+    """Pull every http(s) URL out of ToolMessages.
+
+    Robust to both string and list-content ToolMessage variants. Returns
+    first-seen order; duplicates are not removed.
+    """
+    sources: list[str] = []
+    for msg in messages:
+        if is_tool_message(msg):
+            content = get_msg_content(msg)
+            if isinstance(content, str):
+                sources.extend(_URL_RE.findall(content))
+            else:
+                sources.extend(_URL_RE.findall(str(content)))
+    return list(dict.fromkeys(sources))

@@ -28,11 +28,14 @@ onto the module, so every subsequent access is a plain dict lookup.
 import os
 import sys
 import threading
+from typing import Any
 
-from dotenv import load_dotenv
-from langchain_groq import ChatGroq
 import groq
+from dotenv import load_dotenv
+from langchain_core.runnables import Runnable
 from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_groq import ChatGroq
+from pydantic import SecretStr
 
 load_dotenv()
 
@@ -71,13 +74,13 @@ def _build_groq_client(model: str, api_key: str, max_retries: int = 2) -> ChatGr
     return ChatGroq(
         model=model,
         temperature=0,
-        api_key=api_key,
+        api_key=SecretStr(api_key),
         max_retries=max_retries,
         timeout=60,
     )
 
 
-def _build_groq_pool(model: str) -> ChatGroq:
+def _build_groq_pool(model: str) -> Runnable:
     """Build a RunnableWithFallbacks that falls back across all Groq keys on exception.
 
     Each key gets its own ChatGroq instance. The primary key is the first
@@ -95,7 +98,7 @@ def _build_groq_pool(model: str) -> ChatGroq:
             "Get a free key at https://console.groq.com."
         )
     clients = [_build_groq_client(model, k) for k in keys]
-    fallbacks = clients[1:]
+    fallbacks: list[Any] = list(clients[1:])
     gemini = _build_fallback()
     if gemini:
         fallbacks.append(gemini)

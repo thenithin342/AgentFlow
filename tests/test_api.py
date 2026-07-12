@@ -21,7 +21,8 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 from langchain_core.messages import HumanMessage
 
-from backend.main import MAX_MESSAGE_CHARS, app
+from backend.constants import MAX_MESSAGE_CHARS
+from backend.main import app
 
 
 class _Chunk:
@@ -306,7 +307,7 @@ async def test_upload_success(monkeypatch, client):
             "chunks": 1,
         }
 
-    monkeypatch.setattr("backend.main.ingest_pdf", _fake_ingest)
+    monkeypatch.setattr("backend.routers.upload.ingest_pdf", _fake_ingest)
     files = {"file": ("doc.pdf", b"%PDF-1.4\n% fake", "application/pdf")}
     r = await client.post(
         "/upload",
@@ -406,9 +407,9 @@ async def test_chat_sse_interrupt(monkeypatch, client):
 
 async def test_upload_rejects_oversized_body(monkeypatch, client):
     """/upload rejects bodies larger than MAX_UPLOAD_BYTES while streaming."""
-    from backend.main import MAX_UPLOAD_BYTES
+    from backend.constants import MAX_UPLOAD_BYTES
 
-    monkeypatch.setattr("backend.main.ingest_pdf", lambda path, tid: None)
+    monkeypatch.setattr("backend.routers.upload.ingest_pdf", lambda path, tid, source_name=None: None)
     big = b"%PDF" + (b"x" * (MAX_UPLOAD_BYTES + 1))
     files = {"file": ("big.pdf", big, "application/pdf")}
     r = await client.post(
