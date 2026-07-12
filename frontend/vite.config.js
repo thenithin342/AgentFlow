@@ -60,5 +60,10 @@ export default defineConfig(({ mode }) => {
     // by Vite's built-in VITE_* env var mechanism — no custom define needed.
     // A custom define block here would override the real value from Vercel/Render
     // env vars with whatever loadEnv() returns (often empty string).
+    test: {
+      environment: "jsdom",
+      setupFiles: ["./src/setupTests.js"],
+      globals: true
+    }
   };
 });

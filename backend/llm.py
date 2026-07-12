@@ -56,8 +56,8 @@ def _collect_groq_keys() -> list[str]:
     """
     candidates = [
         os.environ.get("GROQ_API_KEY", ""),
-        os.environ.get("GROQ_API_KEY_2", ""),
-        os.environ.get("GROQ_API_KEY_3", ""),
+        os.environ.get("dummy1", ""),
+        os.environ.get("dummy2", ""),
     ]
     seen: set[str] = set()
     keys: list[str] = []

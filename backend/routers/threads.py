@@ -54,30 +54,40 @@ async def list_threads(
     if db_conn is None or kind is None:
         return {"threads": []}
 
+    # Use MAX(checkpoint_id) so we get one row per thread with the latest
+    # checkpoint. UUID v6 strings sort lexicographically by time, so MAX()
+    # always returns the most-recent checkpoint.
     sql = (
-        "SELECT thread_id, checkpoint_id FROM checkpoints "
+        "SELECT thread_id, MAX(checkpoint_id) as latest_cp "
+        "FROM checkpoints "
         "WHERE thread_id LIKE ? ESCAPE '\\' "
-        "ORDER BY thread_id, checkpoint_id DESC"
+        "GROUP BY thread_id "
+        "ORDER BY latest_cp DESC"
     )
     like_pattern = scoped_prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
     sql_args: tuple = (like_pattern,)
 
     threads: list[dict] = []
-    seen: set[str] = set()
     try:
         if kind == "sqlite":
             async with db_conn.execute(sql, sql_args) as cur:
                 async for row in cur:
                     tid = row[0]
-                    if tid in seen:
-                        continue
-                    seen.add(tid)
+                    cp_id = row[1]
                     threads.append({
                         "thread_id": tid[len(scoped_prefix):],
-                        "last_seen": checkpoint_id_to_iso(row[1]),
+                        "last_seen": checkpoint_id_to_iso(cp_id),
+                        "checkpoint_id": cp_id,
                     })
         elif kind == "postgres":
-            pg_sql = sql.replace("?", "%s").replace("ESCAPE '\\'", "")
+            # Postgres: use equivalent GROUP BY / MAX query
+            pg_sql = (
+                "SELECT thread_id, MAX(checkpoint_id) as latest_cp "
+                "FROM checkpoints "
+                "WHERE thread_id LIKE %s "
+                "GROUP BY thread_id "
+                "ORDER BY latest_cp DESC"
+            )
             execute = getattr(db_conn, "execute", None)
             if execute is None:
                 logger.warning("list_threads_postgres_api_unavailable", user=user.username)
@@ -86,12 +96,11 @@ async def list_threads(
             rows = await cur.fetchall()
             for row in rows:
                 tid = row[0]
-                if tid in seen:
-                    continue
-                seen.add(tid)
+                cp_id = row[1]
                 threads.append({
                     "thread_id": tid[len(scoped_prefix):],
-                    "last_seen": checkpoint_id_to_iso(row[1]),
+                    "last_seen": checkpoint_id_to_iso(cp_id),
+                    "checkpoint_id": cp_id,
                 })
         else:
             return {"threads": []}
@@ -99,7 +108,13 @@ async def list_threads(
         logger.exception("list_threads_failed", user=user.username)
         raise HTTPException(status_code=500, detail="internal server error")
 
-    threads.sort(key=lambda t: t["last_seen"] or "", reverse=True)
+    # SQL already ordered by latest_cp DESC so the list is correct when
+    # last_seen parsed OK.  Fall back to raw checkpoint_id (UUID v6 sorts
+    # lexicographically by time) for any rows where ISO conversion failed.
+    threads.sort(
+        key=lambda t: t["last_seen"] or t.get("checkpoint_id") or "",
+        reverse=True,
+    )
     return {"threads": threads[:100]}
 
 @router.get("/threads/{thread_id}/history")

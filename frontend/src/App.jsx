@@ -47,6 +47,10 @@ import { MAX_MESSAGE_CHARS, MAX_UPLOAD_BYTES, TRACE_STREAM_NODES, SSE_TOKEN_NODE
 import { parseSSEPayload } from "./sseParser";
 import { getToken, clearToken, isExpired, getUsername } from "./auth";
 import LoginScreen from "./LoginScreen.jsx";
+import useSSE from "./hooks/useSSE";
+import MessageBubble from "./components/Chat/MessageBubble";
+import ChatInput from "./components/Chat/ChatInput";
+import Sidebar from "./components/Sidebar/Sidebar";
 
 function streamAgentMeta(agent) {
   if (agent === "chat_agent") return "chat";
@@ -263,336 +267,6 @@ function CopyButton({ text, style }) {
 }
 
 const COLLAPSE_THRESHOLD = 1500; // chars
-
-const Message = memo(function Message({ msg, onApprove, onEditResend, onSubmitEdit, editingReview, editText, setEditText, onRetry, onInlineEdit }) {
-  const [collapsed, setCollapsed] = useState(
-    msg.role === "agent" && !msg.streaming && (msg.text?.length ?? 0) > COLLAPSE_THRESHOLD
-  );
-  const [isTyping, setIsTyping] = useState(false);
-  const [timeLeft, setTimeLeft] = useState(60);
-
-  useEffect(() => {
-    if (!msg.streaming) return;
-    setIsTyping(true);
-    const t = setTimeout(() => setIsTyping(false), 300);
-    return () => clearTimeout(t);
-  }, [msg.text, msg.streaming]);
-
-  useEffect(() => {
-    if (msg.role !== "review") return;
-    const timer = setInterval(() => {
-      setTimeLeft((prev) => {
-        if (prev <= 1) {
-          clearInterval(timer);
-          return 0;
-        }
-        return prev - 1;
-      });
-    }, 1000);
-    return () => clearInterval(timer);
-  }, [msg.role]);
-
-  // Auto-uncollapse once streaming finishes
-  useEffect(() => {
-    if (!msg.streaming && (msg.text?.length ?? 0) <= COLLAPSE_THRESHOLD) {
-      setCollapsed(false);
-    }
-  }, [msg.streaming, msg.text]);
-
-  if (msg.role === "user") {
-    return (
-      <div
-        style={{
-          alignSelf: "flex-end",
-          maxWidth: "78%",
-          background: "var(--af-bg-surface)",
-          borderRadius: 8,
-          padding: "9px 13px",
-          color: "var(--af-text-primary)",
-          fontSize: 13.5,
-          lineHeight: 1.5,
-          whiteSpace: "pre-wrap",
-          position: "relative",
-        }}
-        className="af-user-message af-msg-enter"
-      >
-        <div style={{ position: "relative" }}>
-          {msg.text}
-          {onInlineEdit && (
-            <button
-              className="af-inline-edit-btn"
-              onClick={() => onInlineEdit(msg.text)}
-              title="Edit text in input box"
-            >
-              ✏️
-            </button>
-          )}
-        </div>
-        {msg.timestamp && (
-          <div className="af-msg-timestamp" style={{ fontSize: 10, color: "var(--af-text-muted)", marginTop: 4, textAlign: "right", fontFamily: "var(--af-font-mono)" }}>
-            {msg.timestamp}
-          </div>
-        )}
-      </div>
-    );
-  }
-
-  if (msg.role === "review") {
-    if (editingReview) {
-      return (
-        <div
-          style={{
-            maxWidth: "92%",
-            background: "var(--af-review-bg)",
-            border: "1px solid var(--af-review-border)",
-            borderRadius: 8,
-            padding: "12px 14px",
-          }}
-        >
-          <div style={{ fontFamily: "var(--af-font-mono)", fontSize: 10.5, color: "var(--af-review)", marginBottom: 7 }}>
-            HUMAN_REVIEW · editing
-          </div>
-          <textarea
-            value={editText}
-            onChange={(e) => setEditText(e.target.value)}
-            onFocus={(e) => {
-              e.currentTarget.style.borderColor = "var(--af-review)";
-            }}
-            onBlur={(e) => {
-              e.currentTarget.style.borderColor = "var(--af-review-border)";
-            }}
-            rows={4}
-            style={{
-              width: "100%",
-              background: "var(--af-bg-app)",
-              border: "1px solid var(--af-review-border)",
-              borderRadius: 5,
-              color: "var(--af-text-body)",
-              fontFamily: "var(--af-font-sans)",
-              fontSize: 13,
-              padding: 8,
-              outline: "none",
-              resize: "vertical",
-              marginBottom: 8,
-            }}
-          />
-          <div style={{ display: "flex", gap: 8 }}>
-            <button
-              onClick={onSubmitEdit}
-              style={{
-                fontFamily: "var(--af-font-mono)",
-                fontSize: 11.5,
-                color: "var(--af-bg-app)",
-                background: "var(--af-review)",
-                border: "none",
-                borderRadius: 5,
-                padding: "6px 12px",
-                cursor: "pointer",
-              }}
-            >
-              Submit
-            </button>
-          </div>
-        </div>
-      );
-    }
-    return (
-      <div
-        style={{
-          maxWidth: "92%",
-          background: "var(--af-review-bg)",
-          border: "1px solid var(--af-review-border)",
-          borderRadius: 8,
-          padding: "12px 14px",
-        }}
-      >
-        <div style={{ fontFamily: "var(--af-font-mono)", fontSize: 10.5, color: "var(--af-review)", marginBottom: 7, display: "flex", justifyContent: "space-between" }}>
-          <span>HUMAN_REVIEW · awaiting approval</span>
-          <span style={{ opacity: 0.7 }}>{timeLeft}s</span>
-        </div>
-        <div style={{ color: "var(--af-text-body)", fontSize: 13.5, lineHeight: 1.6, marginBottom: 11 }}>
-          {msg.text}
-        </div>
-        <div style={{ display: "flex", gap: 8 }}>
-          <button
-            onClick={onApprove}
-            disabled={timeLeft === 0}
-            style={{
-              fontFamily: "var(--af-font-mono)",
-              fontSize: 11.5,
-              color: "var(--af-bg-app)",
-              background: "var(--af-review)",
-              border: "none",
-              borderRadius: 5,
-              padding: "6px 12px",
-              cursor: timeLeft === 0 ? "not-allowed" : "pointer",
-              opacity: timeLeft === 0 ? 0.5 : 1,
-            }}
-          >
-            Approve
-          </button>
-          <button
-            onClick={() => onEditResend(msg.text)}
-            disabled={timeLeft === 0}
-            style={{
-              fontFamily: "var(--af-font-mono)",
-              fontSize: 11.5,
-              color: "var(--af-text-body)",
-              background: "transparent",
-              border: "1px solid var(--af-review-border)",
-              borderRadius: 5,
-              padding: "6px 12px",
-              cursor: timeLeft === 0 ? "not-allowed" : "pointer",
-              opacity: timeLeft === 0 ? 0.5 : 1,
-            }}
-          >
-            Edit and resend
-          </button>
-        </div>
-      </div>
-    );
-  }
-
-  // role === "agent"
-  const color = (msg.error || msg.aborted) ? "var(--af-error)" : (AGENT_COLORS[msg.agent] || "var(--af-router)");
-  // Phase 2: citation chips. Parsed once per text change via useMemo in
-  // the parent (App) and passed in as `citations` to keep this memoized
-  // component pure. Hidden while streaming so chips don't pop in mid-
-  // stream before the LLM has finished writing.
-  const citations = msg.citations ?? [];
-  return (
-    <div className="af-msg-enter" style={{ maxWidth: "84%", borderLeft: `2px solid ${color}`, padding: "6px 0 6px 12px" }}>
-      <div style={{ fontFamily: "var(--af-font-mono)", fontSize: 10.5, color, marginBottom: 5, display: "flex", alignItems: "center", gap: 8 }}>
-        <AgentAvatar agent={msg.agent} />
-        <span>
-          <span style={{ fontWeight: 500, letterSpacing: "0.04em" }}>{msg.agent ? msg.agent.toUpperCase().replace("_AGENT", "") : "AGENT"}</span> · {msg.error ? "error" : msg.aborted ? "aborted" : msg.meta}
-        </span>
-        {msg.text && !msg.streaming && !msg.error && !msg.aborted && (
-          <CopyButton text={msg.text} />
-        )}
-        {msg.timestamp && (
-          <span className="af-msg-timestamp" style={{ color: "var(--af-text-muted)", marginLeft: "auto" }}>{msg.timestamp}</span>
-        )}
-      </div>
-      <div style={{ color: "var(--af-text-body)", fontSize: 13.5, lineHeight: 1.6 }}>
-        {msg.error ? (
-          <div className="af-error-panel" role="alert">
-            <div className="af-error-panel-text">{msg.text || "An error occurred."}</div>
-            {onRetry ? (
-              <button
-                className="af-error-panel-retry"
-                onClick={() => onRetry(msg.id)}
-              >
-                Retry
-              </button>
-            ) : null}
-          </div>
-        ) : msg.aborted ? (
-          <div className="af-aborted">[aborted] — generation was cancelled.</div>
-        ) : (
-          <>
-            {msg.text ? (
-              <>
-                <div className={`markdown-body${collapsed ? " af-msg-collapsed" : ""}`}>
-                  <ReactMarkdown
-                    remarkPlugins={[remarkGfm]}
-                    rehypePlugins={[rehypeSanitize]}
-                    components={{
-                      code({ node, inline, className, children, ...props }) {
-                        const match = /language-(\w+)/.exec(className || "");
-                        const lang = match ? match[1] : null;
-                        const codeText = String(children).replace(/\n$/, "");
-                        return !inline && match ? (
-                          <div className="af-code-block">
-                            <div className="af-code-header">
-                              <span>{lang}</span>
-                              <CopyButton text={codeText} />
-                            </div>
-                            <SyntaxHighlighter
-                              style={vscDarkPlus}
-                              language={lang}
-                              PreTag="div"
-                              customStyle={{ margin: 0, padding: "12px", background: "var(--af-bg-panel)", fontSize: "12px" }}
-                            >
-                              {codeText}
-                            </SyntaxHighlighter>
-                          </div>
-                        ) : (
-                          <code className={className} {...props}>{children}</code>
-                        );
-                      }
-                    }}
-                  >
-                    {msg.text}
-                  </ReactMarkdown>
-                </div>
-                {(msg.text?.length ?? 0) > COLLAPSE_THRESHOLD && !msg.streaming && (
-                  <button
-                    className="af-msg-expand-btn"
-                    onClick={() => setCollapsed((c) => !c)}
-                  >
-                    {collapsed ? `▼ Show full response (${msg.text.length} chars)` : "▲ Collapse"}
-                  </button>
-                )}
-              </>
-            ) : (msg.streaming && (
-              <div className="af-typing-indicator">
-                <span />
-                <span />
-                <span />
-              </div>
-            ))}
-            {msg.streaming ? <span className={`af-cursor ${isTyping ? "af-cursor-typing" : ""}`} aria-hidden="true" /> : null}
-          </>
-        )}
-      </div>
-      {!msg.error && !msg.aborted && citations.length > 0 ? (
-        <div
-          style={{
-            marginTop: 8,
-            display: "flex",
-            flexWrap: "wrap",
-            gap: 6,
-            alignItems: "center",
-          }}
-        >
-          <span
-            style={{
-              fontFamily: "var(--af-font-mono)",
-              fontSize: 10,
-              color: "var(--af-text-muted)",
-            }}
-          >
-            Sources:
-          </span>
-          {citations.slice(0, 8).map((c, i) => (
-            <a
-              key={`${c.n}-${i}`}
-              className="af-source-chip"
-              href={c.url}
-              target="_blank"
-              rel="noreferrer noopener"
-            >
-              [{c.n}] {c.host}
-            </a>
-          ))}
-          {citations.length > 8 ? (
-            <span
-              style={{
-                fontFamily: "var(--af-font-mono)",
-                fontSize: 10,
-                color: "var(--af-text-muted)",
-              }}
-            >
-              …
-            </span>
-          ) : null}
-        </div>
-      ) : null}
-    </div>
-  );
-});
-
 export default function App() {
   // Auth gate. The /auth/login endpoint is on the backend's
   // PUBLIC_PATHS allowlist, so it works without a token — everything
@@ -657,8 +331,9 @@ export default function App() {
 
 function ChatApp({ currentUser, onLogout }) {
   const [threadId, setThreadId] = useState(() => uuid());
-  const [messages, setMessages] = useState([]);
-  const [theme, setTheme] = useState("dark");
+
+
+    const [theme, setTheme] = useState("dark");
   // Phase 9: blog output and active main tab
   const [blogOutput, setBlogOutput] = useState(null);
   const [activeTab, setActiveTab] = useState("chat"); // "chat" | "blog"
@@ -668,10 +343,8 @@ function ChatApp({ currentUser, onLogout }) {
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
   }, [theme]);
-  const [trace, setTrace] = useState([]);
-  const [input, setInput] = useState("");
-  const [isStreaming, setIsStreaming] = useState(false);
-  const [isUploading, setIsUploading] = useState(false);
+    const [input, setInput] = useState("");
+    const [isUploading, setIsUploading] = useState(false);
   const [reviewRequired, setReviewRequired] = useState(false);
   const [editingReview, setEditingReview] = useState(false);
   const [editText, setEditText] = useState("");
@@ -682,16 +355,32 @@ function ChatApp({ currentUser, onLogout }) {
     if (statusErrorTimeoutRef.current) clearTimeout(statusErrorTimeoutRef.current);
     statusErrorTimeoutRef.current = setTimeout(() => setStatusError(null), 3000);
   }, []);
+  const {
+    messages,
+    setMessages,
+    trace,
+    setTrace,
+    isStreaming,
+    setIsStreaming,
+    sendMessage,
+    resetStreamState,
+    abortRef
+  } = useSSE({
+    threadId,
+    showError,
+    reviewRequired,
+    setReviewRequired,
+    setEditingReview,
+    activeTab
+  });
+
   const [showScrollChip, setShowScrollChip] = useState(false);
   const [unreadCount, setUnreadCount] = useState(0);
   const [showShortcuts, setShowShortcuts] = useState(false);
   const scrollRef = useRef(null);
   const fileInputRef = useRef(null);
   const inputRef = useRef(null);
-  const abortRef = useRef(null);
-  const pendingDraftRef = useRef(null);
-  const rafPendingRef = useRef(false);
-  const shortcutsButtonRef = useRef(null);
+        const shortcutsButtonRef = useRef(null);
   const shortcutsPopoverRef = useRef(null);
   const autoGrowRafRef = useRef(null);
   // Per-stream generation counter. Incremented at the start of every
@@ -699,23 +388,17 @@ function ChatApp({ currentUser, onLogout }) {
   // bails out if the ref has moved on (i.e. a newer request has started
   // or resetThread was called). This prevents a stale fetch/watchdog/rAF
   // from mutating state that now belongs to a different conversation.
-  const streamGenRef = useRef(0);
-  const loadGenRef = useRef(0);
-  const activeStreamAgentRef = useRef("router");
-  // Phase 2: stream timing. `synthStartMs` is captured the moment the
+    const loadGenRef = useRef(0);
+    // Phase 2: stream timing. `synthStartMs` is captured the moment the
   // streaming message appears in the UI; `lastMetaUpdateMs` gates the
   // rAF's meta write to 4 Hz so a 60Hz rAF doesn't re-render the
   // message list on every frame just to update a single label.
-  const synthStartMsRef = useRef(null);
-  const lastMetaUpdateMsRef = useRef(0);
-  // Per-stream source count. Backend emits [SOURCES:n] right before
+      // Per-stream source count. Backend emits [SOURCES:n] right before
   // [DONE] only on a non-interrupt run; the meta line picks it up.
-  const streamSourcesRef = useRef(0);
-  // Watchdog: timestamp of the last received token. Reset to Date.now()
+    // Watchdog: timestamp of the last received token. Reset to Date.now()
   // on every successful read. Interval checks every 5s and triggers an
   // error state if the gap exceeds STALL_MS (60s).
-  const lastTokenAtMsRef = useRef(0);
-
+  
   const lastMessagesLengthRef = useRef(0);
 
   useEffect(() => {
@@ -763,14 +446,9 @@ function ChatApp({ currentUser, onLogout }) {
   // mint a new threadId, and clear everything. Called by both the New
   // button and the Cmd/Ctrl+K shortcut.
   const resetThread = useCallback(() => {
-    abortRef.current?.abort();
-    abortRef.current = null;
-    streamGenRef.current += 1; // invalidate any in-flight callbacks
+    resetStreamState();
     setThreadId(uuid());
-    setMessages([]);
-    setTrace([]);
     setInput("");
-    setIsStreaming(false);
     setShowScrollChip(false);
     setReviewRequired(false);
     setEditingReview(false);
@@ -778,7 +456,7 @@ function ChatApp({ currentUser, onLogout }) {
     setStatusError(null);
     setBlogOutput(null);
     setActiveTab("chat");
-  }, []);
+  }, [resetStreamState]);
 
   // Esc key handling also closes the shortcuts popover. The popover's
   // own Esc handler can't run because focus is outside the popover when
@@ -884,409 +562,7 @@ function ChatApp({ currentUser, onLogout }) {
   // explicit text without going through `input` state (which would require
   // a setTimeout to commit before sending). `input` argument is REQUIRED
   // — pass `input.trim()` from the input bar handler.
-  async function sendMessage(text) {
-    if (!text || !text.trim() || isStreaming) return;
-    if (text.length > MAX_MESSAGE_CHARS) {
-      showError(`message too long (max ${MAX_MESSAGE_CHARS} characters)`);
-      return;
-    }
-    if (abortRef.current) abortRef.current.abort();
-    abortRef.current = new AbortController();
-    // Mint a new generation token. Every async callback below captures
-    // `myGen` and skips state writes if `streamGenRef.current !== myGen`.
-    const myGen = streamGenRef.current + 1;
-    streamGenRef.current = myGen;
-    const timestamp = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    setMessages((m) => [...m, { role: "user", text, id: uuid(), timestamp }]);
-    setTrace((t) => [...t, { node: "router", label: "routing…", active: true, time: now() }]);
-    setIsStreaming(true);
-    // Reset stream-time refs at the start of each request.
-    synthStartMsRef.current = null;
-    lastMetaUpdateMsRef.current = 0;
-    streamSourcesRef.current = 0;
-    activeStreamAgentRef.current = "router";
-
-    let res;
-    try {
-      res = await apiFetch("/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          thread_id: threadId,
-          message: text,
-          review_required: reviewRequired,
-        }),
-        signal: abortRef.current.signal,
-      });
-    } catch (err) {
-      if (err.name === "AbortError") {
-        setIsStreaming(false);
-        // Pre-first-token abort: the streaming message was never created.
-        // Surface a stub so the user sees feedback instead of a frozen UI.
-        setMessages((m) => {
-          if (m.length === 0) return m;
-          const next = [...m];
-          const last = next[next.length - 1];
-          if (last.role === "agent" && last.streaming) {
-            next[next.length - 1] = {
-              ...last,
-              streaming: false,
-              aborted: true,
-              meta: "aborted",
-            };
-          } else if (last.role === "user") {
-            next.push({
-              role: "agent",
-              agent: "router",
-              meta: "aborted",
-              text: "[aborted before first token]",
-              aborted: true,
-              id: uuid(),
-            });
-          }
-          return next;
-        });
-        setTrace((t) => [
-          ...t.map((x) => (x.active ? { ...x, active: false } : x)),
-          { node: "router", label: "aborted", time: now() },
-        ]);
-        return;
-      }
-      setIsStreaming(false);
-      setTrace((t) => [
-        ...t.map((e) => (e.active ? { ...e, active: false } : e)),
-        { node: "router", label: "error", time: now() },
-      ]);
-      showError(err.message || "network error");
-      return;
-    }
-
-    // Non-2xx response — the body isn't a valid SSE stream. Surface the
-    // status and bail out cleanly. The 400 case here is the backend's
-    // thread_id regex rejection.
-    if (!res.ok) {
-      setIsStreaming(false);
-      // 401 = token expired or revoked server-side. Clear and bounce
-      // to login instead of leaving the user staring at an error.
-      if (res.status === 401) {
-        clearToken();
-        showError("session expired — please sign in again");
-        // Bounce happens via the App-level effect watching the token.
-        // We can't unmount ChatApp from here without a context, so the
-        // next authed-check tick (within 60s) will redirect. Force it
-        // now by reloading — the simplest reliable reset.
-        setTimeout(() => window.location.reload(), 1200);
-        return;
-      }
-      setTrace((t) => [
-        ...t.map((e) => (e.active ? { ...e, active: false } : e)),
-        { node: "router", label: `error ${res.status}`, time: now() },
-      ]);
-      let detail = `server returned ${res.status}`;
-      try {
-        const errBody = await res.json();
-        if (errBody?.detail) {
-          detail = typeof errBody.detail === "string"
-            ? errBody.detail
-            : JSON.stringify(errBody.detail);
-        }
-      } catch { /* non-JSON body */ }
-      showError(detail);
-      return;
-    }
-
-    const streamingId = uuid();
-    const agentTimestamp = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    setMessages((m) => [
-      ...m,
-      {
-        role: "agent",
-        agent: "router",
-        meta: "routing…",
-        text: "",
-        streaming: true,
-        id: streamingId,
-        timestamp: agentTimestamp,
-      },
-    ]);
-    synthStartMsRef.current = Date.now();
-    lastMetaUpdateMsRef.current = Date.now();
-    lastTokenAtMsRef.current = Date.now();
-
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = "";
-    let draft = "";
-    let sentinel = null;
-    let sourcesCount = 0;
-    let didRunBlogWriter = false;
-
-    // Watchdog: if no token arrives for 60s, surface as [ERROR] so the
-    // user isn't staring at a frozen cursor. The setInterval is cleared
-    // on every successful read and at the end of the stream.
-    const STALL_MS = 60_000;
-    const watchdog = setInterval(() => {
-      if (streamGenRef.current !== myGen) { clearInterval(watchdog); return; }
-      if (Date.now() - lastTokenAtMsRef.current > STALL_MS) {
-        sentinel = "[ERROR]";
-        clearInterval(watchdog);
-        try { reader.cancel(); } catch { /* best effort */ }
-        if (streamGenRef.current !== myGen) return;
-        setMessages((m) => {
-          const next = [...m];
-          const idx = next.findIndex((x) => x.id === streamingId);
-          if (idx !== -1 && next[idx].streaming) {
-            next[idx] = {
-              ...next[idx],
-              streaming: false,
-              error: true,
-              text: next[idx].text || "Stream stalled (60s with no tokens).",
-            };
-          }
-          return next;
-        });
-        setTrace((t) => [
-          ...t.map((e) => (e.active ? { ...e, active: false } : e)),
-          { node: "synthesizer", label: "stalled", time: now() },
-        ]);
-        setIsStreaming(false);
-      }
-    }, 5_000);
-
-    try {
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        lastTokenAtMsRef.current = Date.now();
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split("\n");
-        buffer = lines.pop();
-        for (const line of lines) {
-          if (!line.startsWith("data: ")) continue;
-          const rawPayload = line.slice(6);
-          const parsed = parseSSEPayload(rawPayload);
-
-          if (parsed.kind === "done") {
-            sentinel = "[DONE]";
-            break;
-          }
-          if (parsed.kind === "interrupt") {
-            sentinel = "[INTERRUPT]";
-            break;
-          }
-          if (parsed.kind === "error") {
-            sentinel = "[ERROR]";
-            break;
-          }
-          if (parsed.kind === "sources") {
-            sourcesCount = parsed.value;
-            streamSourcesRef.current = parsed.value;
-            continue;
-          }
-          if (parsed.kind === "final") {
-            if (!draft) {
-              draft = parsed.value;
-              pendingDraftRef.current = draft;
-            }
-            continue;
-          }
-          if (parsed.kind === "tool_start") {
-            setTrace((t) => [
-              ...t.map((e) => (e.active ? { ...e, active: false } : e)),
-              { node: parsed.value, label: "tool…", active: true, time: now() },
-            ]);
-            continue;
-          }
-          if (parsed.kind === "node_start") {
-            const { node, startMs } = parsed.value;
-            setTrace((t) => {
-              if (t.length > 0 && t[t.length - 1].node === node) return t;
-              const next = t.map((e) => (e.active ? { ...e, active: false } : e));
-              next.push({ node, label: "working…", active: true, time: now(), startMs });
-              return next;
-            });
-            if (SSE_TOKEN_NODES.has(node)) {
-              if (node === "blog_writer") didRunBlogWriter = true;
-              activeStreamAgentRef.current = node;
-              setMessages((m) => {
-                const next = [...m];
-                const idx = next.findIndex((x) => x.id === streamingId);
-                if (idx === -1 || !next[idx].streaming) return next;
-                const short = streamAgentMeta(node);
-                next[idx] = {
-                  ...next[idx],
-                  agent: node,
-                  meta: `${short} · working…`,
-                };
-                return next;
-              });
-            }
-            continue;
-          }
-          if (parsed.kind === "node_end") {
-            const node = parsed.value;
-            setTrace((t) => {
-              for (let i = t.length - 1; i >= 0; i--) {
-                if (t[i].node === node && t[i].startMs) {
-                  const ms = Date.now() - t[i].startMs;
-                  const next = [...t];
-                  next[i] = {
-                    ...t[i],
-                    label: "done",
-                    active: false,
-                    latency: (ms / 1000).toFixed(1) + "s",
-                    startMs: null,
-                  };
-                  return next;
-                }
-              }
-              return t;
-            });
-            continue;
-          }
-          if (parsed.kind === "skip") continue;
-
-          draft += parsed.value;
-          pendingDraftRef.current = draft;
-          if (!rafPendingRef.current) {
-            rafPendingRef.current = true;
-            requestAnimationFrame(() => {
-              rafPendingRef.current = false;
-              if (streamGenRef.current !== myGen) return; // stale request
-              const d = pendingDraftRef.current;
-              // Phase 2: throttle the meta write to ~4Hz. The text write
-              // runs every rAF tick so tokens stay smooth; the meta line
-              // is `synthesizer · N.Ns` and a 4Hz cadence is the right
-              // resolution. Last-write-wins means a slow update is
-              // harmless — the next frame will catch up.
-              const nowMs = Date.now();
-              const metaDue = nowMs - lastMetaUpdateMsRef.current >= 250;
-              const startMs = synthStartMsRef.current ?? nowMs;
-              const elapsed = ((nowMs - startMs) / 1000).toFixed(1) + "s";
-              const short = streamAgentMeta(activeStreamAgentRef.current);
-              setMessages((m) => {
-                const next = [...m];
-                // Find by streamingId so we never accidentally overwrite
-                // the user message when React batches the initial add.
-                const idx = next.findIndex((x) => x.id === streamingId);
-                if (idx === -1) return next;
-                next[idx] = {
-                  ...next[idx],
-                  text: d,
-                  ...(metaDue ? { meta: `${short} · ${elapsed}` } : {}),
-                };
-                return next;
-              });
-              if (metaDue) lastMetaUpdateMsRef.current = nowMs;
-            });
-          }
-        }
-        if (sentinel) break;
-      }
-    } catch (err) {
-      if (err.name === "AbortError") {
-        if (streamGenRef.current === myGen) setIsStreaming(false);
-        return;
-      }
-      if (streamGenRef.current !== myGen) return;
-      setIsStreaming(false);
-      showError(err.message || "stream error");
-      return;
-    } finally {
-      clearInterval(watchdog);
-    }
-
-    if (streamGenRef.current !== myGen) return; // superseded by a newer request
-    setIsStreaming(false);
-    // Final meta line — capture the elapsed time once, use it for both
-    // the streaming message meta and (synthesizer) trace entry.
-    const finalElapsed = synthStartMsRef.current
-      ? ((Date.now() - synthStartMsRef.current) / 1000).toFixed(1) + "s"
-      : "0.0s";
-    const shortAgent = streamAgentMeta(activeStreamAgentRef.current);
-    const streamFinalMeta =
-      sourcesCount > 0
-        ? `${shortAgent} · ${finalElapsed} · ${sourcesCount} sources`
-        : `${shortAgent} · ${finalElapsed} · done`;
-    const doneNode = activeStreamAgentRef.current;
-    let streamSucceeded = false;
-
-    if (sentinel === "[INTERRUPT]") {
-      setMessages((m) => {
-        const next = [...m];
-        const idx = next.findIndex((x) => x.id === streamingId);
-        if (idx !== -1) {
-          next[idx] = { role: "review", text: draft, id: streamingId, timestamp: next[idx].timestamp };
-        }
-        return next;
-      });
-      setTrace((t) => [
-        ...t.map((e) => (e.active ? { ...e, active: false } : e)),
-        { node: "human_review", label: "awaiting…", active: true, time: now() },
-      ]);
-      setEditingReview(false);
-    } else if (sentinel === "[ERROR]") {
-      setMessages((m) => {
-        const next = [...m];
-        const idx = next.findIndex((x) => x.id === streamingId);
-        if (idx !== -1) {
-          next[idx] = {
-            ...next[idx],
-            streaming: false,
-            text: next[idx].text || "An error occurred. Please try again.",
-            error: true,
-          };
-        }
-        return next;
-      });
-      setTrace((t) => [
-        ...t.map((e) => (e.active ? { ...e, active: false } : e)),
-        { node: doneNode, label: "error", time: now() },
-      ]);
-    } else {
-      streamSucceeded = true;
-      setMessages((m) => {
-        const next = [...m];
-        const idx = next.findIndex((x) => x.id === streamingId);
-        if (idx === -1) return next;
-        next[idx] = {
-          ...next[idx],
-          streaming: false,
-          meta: streamFinalMeta,
-          agent: doneNode,
-          // Always write the final draft — rAF may not have flushed the last
-          // batch before setIsStreaming fired, so this guarantees the text
-          // is never blank in the finished message.
-          text: draft || next[idx].text,
-        };
-        return next;
-      });
-      setTrace((t) => [
-        ...t.map((e) => (e.active ? { ...e, active: false } : e)),
-        { node: doneNode, label: "done", time: now(), latency: finalElapsed, startMs: null },
-      ]);
-    }
-
-    // After a blog_writer turn, fetch the structured blog_output and switch
-    // the UI to the Blog tab automatically.
-    if (didRunBlogWriter && streamGenRef.current === myGen && streamSucceeded) {
-      try {
-        const blogRes = await apiFetch(`/threads/${threadId}/blog`);
-        if (blogRes.ok) {
-          const blogData = await blogRes.json();
-          if (blogData?.blog_output) {
-            setBlogOutput(blogData.blog_output);
-            setActiveTab("blog");
-          }
-        }
-      } catch { /* silent — blog tab stays empty */ }
-    }
-
-    // Refresh thread list after every completed turn so the sidebar stays current.
-    if (streamGenRef.current === myGen) {
-      setTimeout(() => fetchThreadList(), 800);
-    }
-  }
+  
 
   // Wrapper used by the input bar's Enter key and Send button. Reads
   // `input` from state — only the welcome chip path passes an explicit
@@ -1492,6 +768,30 @@ function ChatApp({ currentUser, onLogout }) {
     return () => clearInterval(id);
   }, [fetchThreadList, sidebarOpen]);
 
+  const wasStreamingRef = useRef(false);
+  useEffect(() => {
+    if (wasStreamingRef.current && !isStreaming) {
+      fetchThreadList();
+      // If the completed stream was a blog generation, fetch and display the
+      // blog output from backend state (blog_output is stored in LangGraph state,
+      // not streamed directly to the frontend).
+      const lastMsg = messages[messages.length - 1];
+      const isBlogStream = lastMsg?.role === "agent" && lastMsg?.agent === "blog_writer";
+      if (isBlogStream) {
+        apiFetch(`/threads/${threadId}/blog`)
+          .then(r => r.ok ? r.json() : null)
+          .then(data => {
+            if (data?.blog_output) {
+              setBlogOutput(data.blog_output);
+              setActiveTab("blog");
+            }
+          })
+          .catch(() => {});
+      }
+    }
+    wasStreamingRef.current = isStreaming;
+  }, [isStreaming, fetchThreadList, messages, threadId]);
+
   async function deleteThread(id, e) {
     e.stopPropagation();
     if (!window.confirm(`Delete thread ${id.slice(0, 8)}…? This is irreversible.`)) return;
@@ -1513,14 +813,8 @@ function ChatApp({ currentUser, onLogout }) {
 
   async function loadThread(id) {
     if (isStreaming) return;
-    abortRef.current?.abort();
-    abortRef.current = null;
-    streamGenRef.current += 1; // invalidate any in-flight stream callbacks
-
+    resetStreamState();
     setThreadId(id);
-    setMessages([]);  // clear immediately so stale content never shows
-    setTrace([]);
-    setIsStreaming(false);
     setShowScrollChip(false);
     setReviewRequired(false);
     setEditingReview(false);
@@ -1528,94 +822,108 @@ function ChatApp({ currentUser, onLogout }) {
     setStatusError(null);
     setBlogOutput(null);
     setActiveTab("chat");
-    // Sidebar stays open when switching threads (don't close it)
 
     // Generation counter — if the user clicks another thread before
     // either await resolves, discard the stale response.
     const myLoadGen = ++loadGenRef.current;
 
     try {
-      const res = await apiFetch(`/threads/${id}/history`);
+      const [histRes, blogRes] = await Promise.all([
+        apiFetch(`/threads/${id}/history`),
+        apiFetch(`/threads/${id}/blog`),
+      ]);
       if (myLoadGen !== loadGenRef.current) return;
-      if (res.ok) {
-        const data = await res.json();
-        if (myLoadGen !== loadGenRef.current) return;
-        // Give loaded messages stable UI IDs if they lack them
-        const loaded = (data.messages || []).map(m => ({
-          ...m,
-          id: m.id || uuid()
-        }));
-        setMessages(loaded);
-        const hasReviewRow =
-          loaded.length > 0 && loaded[loaded.length - 1].role === "review";
+
+      // ── Blog output ──────────────────────────────────────────────────────
+      if (blogRes.ok) {
         try {
-          const stateRes = await apiFetch(`/threads/${id}/state`);
+          const blogData = await blogRes.json();
           if (myLoadGen !== loadGenRef.current) return;
-          if (stateRes.ok) {
-            const stateData = await stateRes.json();
-            if (myLoadGen !== loadGenRef.current) return;
-            if (stateData?.values?.review_required !== undefined) {
-              setReviewRequired(stateData.values.review_required);
-            }
-            if (stateData?.interrupt?.pending) {
-              setReviewRequired(true);
-              if (!hasReviewRow) {
-                const draft =
-                  stateData.interrupt.draft ||
-                  stateData?.values?.final_response ||
-                  "";
-                setMessages((prev) => [
-                  ...prev,
-                  { role: "review", text: draft, id: uuid() },
-                ]);
-              }
-              setTrace((t) => [
-                ...t.map((e) => (e.active ? { ...e, active: false } : e)),
-                {
-                  node: "human_review",
-                  label: "awaiting…",
-                  active: true,
-                  time: now(),
-                },
+          if (blogData?.blog_output) {
+            setBlogOutput(blogData.blog_output);
+            setActiveTab("blog");   // switch to Blog tab so user sees it
+          }
+        } catch { /* non-JSON or empty — ignore */ }
+      }
+
+      // ── Chat history ─────────────────────────────────────────────────────
+      if (!histRes.ok) {
+        setMessages([]);
+        showError(`Failed to load thread history (${histRes.status})`);
+        return;
+      }
+
+      const data = await histRes.json();
+      if (myLoadGen !== loadGenRef.current) return;
+
+      const loaded = (data.messages || []).map(m => ({
+        ...m,
+        id: m.id || uuid(),
+      }));
+      setMessages(loaded);
+
+      // ── Reconstruct execution trace from history messages ─────────────────
+      // We can't restore exact timing, but we can show which agents ran.
+      const reconstructedTrace = loaded
+        .filter(m => m.role === "agent" && m.agent)
+        .map(m => ({
+          node: m.agent,
+          label: "done",
+          active: false,
+          time: m.timestamp || null,
+          latency: null,
+        }));
+      if (reconstructedTrace.length > 0) {
+        setTrace(reconstructedTrace);
+      }
+
+      // ── State / interrupt ─────────────────────────────────────────────────
+      const hasReviewRow =
+        loaded.length > 0 && loaded[loaded.length - 1].role === "review";
+      try {
+        const stateRes = await apiFetch(`/threads/${id}/state`);
+        if (myLoadGen !== loadGenRef.current) return;
+        if (stateRes.ok) {
+          const stateData = await stateRes.json();
+          if (myLoadGen !== loadGenRef.current) return;
+          if (stateData?.values?.review_required !== undefined) {
+            setReviewRequired(stateData.values.review_required);
+          }
+          if (stateData?.interrupt?.pending) {
+            setReviewRequired(true);
+            if (!hasReviewRow) {
+              const draft =
+                stateData.interrupt.draft ||
+                stateData?.values?.final_response ||
+                "";
+              setMessages(prev => [
+                ...prev,
+                { role: "review", text: draft, id: uuid() },
               ]);
             }
+            setTrace(t => [
+              ...t.map(e => (e.active ? { ...e, active: false } : e)),
+              { node: "human_review", label: "awaiting…", active: true, time: now() },
+            ]);
           }
-        } catch (e) {
-          console.error("Failed to fetch state", e);
-          showError("Failed to load thread state");
         }
-      } else {
-        // History fetch failed — clear messages so the UI does not keep
-        // showing content from a previously loaded thread.
-        setMessages([]);
-        showError(`Failed to load thread history (${res.status})`);
+      } catch (e) {
+        console.error("Failed to fetch state", e);
       }
     } catch (err) {
-      console.error("Failed to load thread history", err);
+      if (myLoadGen !== loadGenRef.current) return;
+      console.error("Failed to load thread", err);
       setMessages([]);
       showError(err.message || "Failed to load thread history");
     }
-    // Also try to fetch blog output for this thread (best-effort)
-    try {
-      const blogRes = await apiFetch(`/threads/${id}/blog`);
-      if (blogRes.ok) {
-        const blogData = await blogRes.json();
-        if (blogData?.blog_output) {
-          setBlogOutput(blogData.blog_output);
-        }
-      }
-    } catch { /* silent — blog output is optional */ }
   }
 
   const handleNewThreadSafe = () => {
-    setMessages((currentMessages) => {
-      if (currentMessages.length > 0 && !window.confirm("Start a new thread? Your current progress is saved in history.")) {
-        return currentMessages;
-      }
-      resetThread();
-      fetchThreadList();
-      return currentMessages;
-    });
+    if (messages.length > 0 && !window.confirm("Start a new thread? Your current progress is saved in history.")) {
+      return;
+    }
+    resetThread();
+    fetchThreadList();
   };
 
   const inputStyle = {
@@ -1870,82 +1178,16 @@ function ChatApp({ currentUser, onLogout }) {
       <div className="af-layout" style={{ flex: 1, display: "flex", minHeight: 0, position: "relative" }}>
         
         {/* Persistent thread sidebar (replaces old floating history panel) */}
-        <div className={`af-sidebar af-scroll ${sidebarOpen ? "" : "collapsed"}`}>
-          <div className="af-sidebar-header">
-            <span className="af-sidebar-title">Threads</span>
-            <button
-              className="af-new-chat-btn"
-              onClick={handleNewThreadSafe}
-              title="New thread (Cmd+K)"
-            >
-              + New
-            </button>
-          </div>
-          <div className="af-sidebar-search">
-            <input
-              type="text"
-              placeholder="Search conversations…"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-            />
-          </div>
-          <div className="af-sidebar-threads">
-            {threadList
-              .filter(t =>
-                (t.preview || t.thread_id)
-                  .toLowerCase()
-                  .includes(searchQuery.toLowerCase())
-              )
-              .map((t) => (
-                <div
-                  key={t.thread_id}
-                  className={`af-thread-item ${t.thread_id === threadId ? "active" : ""}`}
-                  onClick={() => loadThread(t.thread_id)}
-                >
-                  <div className="af-thread-preview">
-                    {t.preview || t.thread_id.slice(0, 20) + "…"}
-                  </div>
-                  <div className="af-thread-meta">
-                    <span className="af-thread-time">
-                      {formatLastSeen(t.last_seen)}
-                    </span>
-                    {t.route && (
-                      <span
-                        className="af-thread-route-badge"
-                        style={{
-                          color: t.route === "blog" ? "var(--af-blog)"
-                            : t.route === "research" ? "var(--af-research)"
-                            : t.route === "analysis" ? "var(--af-analysis)"
-                            : "var(--af-text-muted)",
-                        }}
-                      >
-                        {t.route}
-                      </span>
-                    )}
-                    {t.turn_count != null && (
-                      <span style={{ fontFamily: "var(--af-font-mono)", fontSize: 9.5, color: "var(--af-text-muted)" }}>
-                        {t.turn_count}t
-                      </span>
-                    )}
-                  </div>
-                  <button
-                    className="af-thread-delete-btn"
-                    onClick={(e) => deleteThread(t.thread_id, e)}
-                    title="Delete thread"
-                    aria-label={`Delete thread ${t.thread_id.slice(0, 8)}`}
-                  >
-                    ✕
-                  </button>
-                </div>
-              ))
-            }
-            {threadList.length === 0 && (
-              <div style={{ padding: "14px", color: "var(--af-text-muted)", fontSize: 12 }}>
-                No conversations yet.
-              </div>
-            )}
-          </div>
-        </div>
+        <Sidebar
+          sidebarOpen={sidebarOpen}
+          threadList={threadList}
+          threadId={threadId}
+          loadThread={loadThread}
+          deleteThread={deleteThread}
+          handleNewThreadSafe={handleNewThreadSafe}
+          searchQuery={searchQuery}
+          setSearchQuery={setSearchQuery}
+        />
 
         <TraceRail trace={trace} />
 
@@ -2136,7 +1378,7 @@ function ChatApp({ currentUser, onLogout }) {
               </div>
             ) : null}
             {messagesWithCitations.map((msg, i) => (
-              <Message
+              <MessageBubble
                 key={msg.id ?? i}
                 msg={msg}
                 onApprove={handleApprove}
@@ -2234,113 +1476,17 @@ function ChatApp({ currentUser, onLogout }) {
             </div>
           )}
 
-          <div
-            style={{
-              flexShrink: 0,
-              borderTop: "1px solid var(--af-border)",
-              padding: "10px 14px",
-              display: "flex",
-              gap: 8,
-              alignItems: "center",
-            }}
-          >
-            <button
-              onClick={() => fileInputRef.current?.click()}
-              disabled={isStreaming || isUploading}
-              aria-label="Attach PDF"
-              style={{
-                background: "transparent",
-                border: "none",
-                color: "var(--af-text-muted)",
-                cursor: (isStreaming || isUploading) ? "not-allowed" : "pointer",
-                fontSize: 18,
-                lineHeight: 1,
-                padding: 6,
-                opacity: (isStreaming || isUploading) ? 0.5 : 1,
-              }}
-            >
-              {isUploading ? "⏳" : "📎"}
-            </button>
-            <button
-              onClick={() => setReviewRequired((r) => !r)}
-              disabled={isStreaming}
-              aria-label="Toggle review mode"
-              title={reviewRequired ? "Review mode ON — response will pause for approval" : "Review mode OFF"}
-              style={{
-                background: reviewRequired ? "rgba(227,179,86,0.15)" : "transparent",
-                border: reviewRequired ? "1px solid var(--af-review-border)" : "1px solid transparent",
-                borderRadius: 5,
-                color: reviewRequired ? "var(--af-review)" : "var(--af-text-muted)",
-                cursor: isStreaming ? "not-allowed" : "pointer",
-                fontFamily: "var(--af-font-mono)",
-                fontSize: 10,
-                letterSpacing: "0.04em",
-                padding: "4px 7px",
-                opacity: isStreaming ? 0.5 : 1,
-                transition: "all 0.15s",
-              }}
-            >
-              REVIEW
-            </button>
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept=".pdf"
-              aria-label="Upload PDF document"
-              onChange={handleFileChange}
-              style={{ display: "none" }}
-            />
-            <textarea
-              id="chat-input"
-              ref={inputRef}
-              value={input}
-              aria-label="Chat message"
-              rows={1}
-              readOnly={isStreaming}
-              aria-busy={isStreaming}
-              onChange={(e) => {
-                setInput(e.target.value);
-                autoGrow(e.currentTarget);
-              }}
-              onKeyDown={(e) => {
-                // Enter sends; Shift+Enter inserts a newline. IME
-                // composition (Chinese / Japanese / Korean) must not be
-                // interrupted — `isComposing` and the legacy keyCode
-                // 229 both signal "still composing". Without these
-                // guards, typing "ni-hao" with pinyin submits the
-                // partial composition to the backend on every Enter.
-                if (e.key !== "Enter") return;
-                if (e.nativeEvent.isComposing || e.keyCode === 229) return;
-                if (e.shiftKey) return;
-                e.preventDefault();
-                handleSend();
-              }}
-              placeholder="Ask agentflow..."
-              style={inputStyle}
-            />
-            {input.trim().length > 0 && (
-              <span className="af-word-count">
-                {input.trim().split(/\s+/).length} words
-                {input.length > MAX_MESSAGE_CHARS * 0.8 && (
-                  <span style={{ marginLeft: 8, color: input.length > MAX_MESSAGE_CHARS ? "var(--af-error)" : "inherit" }}>
-                    | {input.length} / {MAX_MESSAGE_CHARS} chars
-                  </span>
-                )}
-              </span>
-            )}
-            <button
-              onClick={handleSend}
-              disabled={sendDisabled}
-              aria-label="Send message"
-              style={{
-                ...SEND_BUTTON_BASE_STYLE,
-                cursor: sendDisabled ? "not-allowed" : "pointer",
-                opacity: sendDisabled ? 0.5 : 1,
-              }}
-            >
-              ↑
-            </button>
-          </div>
+          <ChatInput
+            input={input}
+            setInput={setInput}
+            isStreaming={isStreaming}
+            isUploading={isUploading}
+            reviewRequired={reviewRequired}
+            setReviewRequired={setReviewRequired}
+            handleSend={handleSend}
+            handleFileChange={handleFileChange}
+            inputRef={inputRef}
+          />
         </div>
       </div>
     </div>
