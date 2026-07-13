@@ -14,7 +14,6 @@ Endpoints:
 from __future__ import annotations
 
 import time
-from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
@@ -88,12 +87,12 @@ class ChangePasswordRequest(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-@router.get("/users", response_model=List[UserResponse])
+@router.get("/users", response_model=list[UserResponse])
 async def list_users(
     request: Request,
     settings: Settings = Depends(get_settings),
     _admin: CurrentUser = Depends(require_admin),
-) -> List[UserResponse]:
+) -> list[UserResponse]:
     """List all registered users (Admin only)."""
     conn = _get_user_conn(request)
     users = await db_list_users(conn)

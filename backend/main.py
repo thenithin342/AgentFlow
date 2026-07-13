@@ -48,10 +48,10 @@ import structlog
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from prometheus_fastapi_instrumentator import Instrumentator
 
 from backend.logging_config import configure_logging, get_logger
 from backend.settings import get_settings
-from prometheus_fastapi_instrumentator import Instrumentator
 
 configure_logging()
 logger = get_logger("agentflow.api")

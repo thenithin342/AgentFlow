@@ -55,7 +55,7 @@ async def refresh(request: Request, settings: Settings = Depends(get_settings)) 
 
     token = auth_header[7:].strip()
 
-    from backend.auth import verify_token, db_get_user
+    from backend.auth import db_get_user, verify_token
     username = verify_token(settings, token, ignore_expiration=True)
     if not username:
         raise HTTPException(status_code=401, detail="invalid token")

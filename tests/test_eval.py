@@ -10,6 +10,7 @@ or
   python tests/test_eval.py
 """
 import os
+
 import pytest
 from langsmith import Client
 from langsmith.evaluation import evaluate

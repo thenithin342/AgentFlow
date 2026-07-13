@@ -8,9 +8,21 @@
 [![LangGraph](https://img.shields.io/badge/LangGraph-1.x-1C3C3C?style=flat-square&logo=langchain&logoColor=white)](https://langchain-ai.github.io/langgraph/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.115+-009688?style=flat-square&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
 [![React](https://img.shields.io/badge/React-18+-61DAFB?style=flat-square&logo=react&logoColor=black)](https://react.dev)
+[![Qdrant](https://img.shields.io/badge/Qdrant-Cloud-DC244C?style=flat-square&logo=qdrant&logoColor=white)](https://qdrant.tech)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow?style=flat-square)](LICENSE)
+[![Release](https://img.shields.io/github/v/release/thenithin342/AgentFlow?style=flat-square&color=brightgreen)](https://github.com/thenithin342/AgentFlow/releases/tag/v1.0.0)
 
-Stateful graph routing · Parallel agent execution · Durable checkpointing · Human-in-the-loop review · RAG over uploaded PDFs · Token streaming
+Stateful graph routing &middot; Parallel agent execution &middot; Durable checkpointing &middot; Human-in-the-loop review &middot; RAG over uploaded PDFs &middot; Token streaming
+
+---
+
+### 🚀 Live Demo &nbsp;&nbsp;&nbsp; 📝 Blog Post
+
+| | |
+|---|---|
+| **Frontend (Vercel)** | [agent-flow-smoky.vercel.app](https://agent-flow-smoky.vercel.app) |
+| **Backend API (Render)** | [agentflow-pl48.onrender.com/docs](https://agentflow-pl48.onrender.com/docs) |
+| **Technical Blog Post** | [Building Multi-Agent AI with LangGraph — dev.to](https://dev.to/thenithin342/building-multi-agent-ai-with-langgraph) |
 
 </div>
 
@@ -258,48 +270,66 @@ agentflow/
 │
 ├── backend/
 │   ├── main.py              # FastAPI app — lifespan, endpoints, SSE streaming
+│   ├── auth.py              # JWT auth + SQLite user store + CRUD helpers (Sprint 4)
+│   ├── settings.py          # Pydantic Settings — all env vars in one place
 │   ├── llm.py               # Lazy LLM singletons; 3-key Groq pool + Gemini fallback
 │   ├── constants.py         # Upload/message limits; SSE node sets
 │   ├── validation.py        # thread_id regex + validator
+│   ├── security.py          # HMAC file signing for FAISS indexes
 │   │
 │   ├── graph/
-│   │   ├── state.py         # AgentState TypedDict (messages, route, agent_output, …)
+│   │   ├── state.py         # AgentState TypedDict
 │   │   ├── router.py        # router_node + route_query conditional edge
-│   │   ├── agents.py        # research / analysis / chat agent nodes; LRU agent cache
-│   │   ├── tools.py         # tavily_search, AST calculator, make_retrieve_documents_tool
+│   │   ├── agents.py        # research / analysis / chat / blog agent nodes
+│   │   ├── tools.py         # tavily_search, AST calculator, retrieve_documents
 │   │   ├── synthesizer.py   # synthesizer_node; prompt-injection barriers
 │   │   ├── human_review.py  # human_review_node; interrupt() / Command(resume=...)
-│   │   ├── build_graph.py   # StateGraph topology; build_compiled_graph(); lazy proxy
-│   │   ├── messages.py      # content_to_str helper
-│   │   └── security.py      # escape_untrusted helper
+│   │   └── build_graph.py   # StateGraph topology
 │   │
-│   └── rag/
-│       └── ingest.py        # ingest_pdf() + get_retriever(); per-thread FAISS + LRU cache
+│   ├── memory/
+│   │   └── ltm.py           # Long-Term Memory; auto-selects Qdrant or FAISS
+│   │
+│   ├── rag/
+│   │   └── ingest.py        # ingest_pdf() + get_retriever(); auto-selects Qdrant or FAISS
+│   │
+│   ├── vectorstore/
+│   │   └── qdrant_store.py  # Qdrant adapter (Sprint 4)
+│   │
+│   └── routers/
+│       ├── auth.py          # POST /auth/login, /auth/refresh
+│       ├── admin.py         # Full CRUD /admin/users (Sprint 4)
+│       ├── chat.py          # POST /chat SSE streaming
+│       ├── upload.py        # POST /upload PDF ingestion
+│       ├── threads.py       # GET /threads, /threads/{id}/state
+│       └── health.py        # GET /healthz, /readyz
 │
 ├── frontend/
 │   └── src/
-│       ├── App.jsx          # Chat UI — SSE streaming, PDF upload, review panel, agent badges
-│       ├── sseParser.js     # SSE payload parser
-│       ├── constants.js     # Shared limits (mirrors backend/constants.py)
-│       ├── ErrorBoundary.jsx
+│       ├── App.jsx          # Root layout, tab navigation
+│       ├── pages/
+│       │   ├── ChatPage.jsx     # Chat UI — SSE streaming, PDF upload, review panel
+│       │   ├── BlogPage.jsx     # Blog generation UI
+│       │   └── AdminPage.jsx    # User management CRUD UI
+│       ├── api/client.js    # Authenticated fetch wrapper
 │       ├── index.css        # Design tokens + layout
 │       └── main.jsx
 │
 ├── tests/
-│   ├── conftest.py          # Fixtures; thread_id injection; rate-limit xfail guard
-│   ├── test_graph.py        # End-to-end graph tests (router, agents, synthesizer, HITL)
-│   ├── test_api.py          # FastAPI endpoint tests (httpx AsyncClient)
-│   ├── test_router.py       # Router unit tests — 20+ labelled classification examples
+│   ├── conftest.py          # Fixtures; rate-limit xfail guard
+│   ├── test_graph.py        # End-to-end graph tests
+│   ├── test_api.py          # FastAPI endpoint tests
+│   ├── test_router.py       # 20+ router classification examples
 │   ├── test_tools.py        # Calculator unit tests
-│   ├── test_messages.py     # content_to_str unit tests
-│   └── sample.pdf           # Fixture PDF for upload / RAG tests
+│   └── test_messages.py     # content_to_str unit tests
 │
 ├── faiss_indexes/           # Per-thread FAISS indexes (git-ignored)
-├── agentflow.db             # SQLite checkpoint store (git-ignored)
+├── ltm_indexes/             # Per-user LTM FAISS indexes (git-ignored)
+├── agentflow.db             # SQLite checkpoint + user store (git-ignored)
+├── CHANGELOG.md             # Version history
 ├── .env.example             # Environment variable template
 ├── requirements.txt         # Production deps
-├── requirements-dev.txt     # Test-only deps (pytest, pytest-asyncio, httpx)
-└── pytest.ini
+├── docker-compose.yml       # SQLite / Postgres / Qdrant profiles
+└── Dockerfile
 ```
 
 ---
@@ -341,6 +371,8 @@ The project is built in 8 incremental phases. Each phase proves the previous one
 | 6 | Human-in-the-loop review via `interrupt()` | ✅ Complete |
 | 7 | RAG pipeline — PDF upload, FAISS retrieval | ✅ Complete |
 | 8 | FastAPI streaming backend + React frontend | ✅ Complete |
+| 9 | JWT auth, rate-limiting, LTM, Blog agent, Admin panel | ✅ Complete |
+| 10 | Qdrant vector store, SQLite user store, full CRUD admin | ✅ Complete |
 
 ---
 
@@ -400,8 +432,9 @@ pytest tests/ --cov=backend --cov-report=term-missing
 ## Future Extensions
 
 - **Parallel multi-agent dispatch** — fan out to multiple agents simultaneously for compound queries (e.g., *"research X and calculate Y"*), re-joining at the Synthesizer via LangGraph fan-out edges
-- **PostgreSQL checkpointer** — swap `SqliteSaver` for `PostgresSaver` for true concurrent multi-user write durability
-- **Streaming agent badges** — push routing decisions to the frontend in real-time as graph execution progresses
+- **WebSocket transport** — replace SSE with a full-duplex WebSocket for lower-latency bidirectional messaging
+- **Voice interface** — pipe STT (Whisper) → agent graph → TTS (ElevenLabs) for a hands-free assistant experience
+- **Multi-modal inputs** — accept image uploads and route to a vision-capable model for diagram analysis
 
 ---
 

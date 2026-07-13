@@ -29,3 +29,8 @@ dist/
 # somewhere else if you do want to commit a known-good fixture DB.
 agentflow.db
 diff_output.txt
+
+# Scratch/one-off dev scripts
+scratch_*.py
+# Per-user LTM FAISS indexes
+ltm_indexes/

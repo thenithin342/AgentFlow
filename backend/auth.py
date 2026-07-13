@@ -36,7 +36,6 @@ import secrets
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
 
 import bcrypt
 import jwt
@@ -116,7 +115,7 @@ async def init_user_table_async(conn) -> None:
 # ---------------------------------------------------------------------------
 
 
-async def db_get_user(conn, username: str) -> Optional[UserRecord]:
+async def db_get_user(conn, username: str) -> UserRecord | None:
     """Fetch a single user by username. Returns None if not found."""
     async with conn.execute(
         "SELECT username, password_hash, created_at FROM users WHERE username = ?",
@@ -175,7 +174,7 @@ async def db_update_password(conn, username: str, new_hash: str) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def _sync_get_user(db_path: str, username: str) -> Optional[UserRecord]:
+def _sync_get_user(db_path: str, username: str) -> UserRecord | None:
     import sqlite3
     with sqlite3.connect(db_path, timeout=10) as conn:
         cur = conn.execute(

@@ -25,8 +25,8 @@ not touch the LLM.
 onto the module, so every subsequent access is a plain dict lookup.
 """
 
-import os
 import logging as _logging
+import os
 import sys
 import threading
 from typing import Any
@@ -42,6 +42,7 @@ load_dotenv()
 
 # We use tiktoken for a fast, reliable token count estimate.
 import tiktoken
+
 _enc = tiktoken.get_encoding("cl100k_base")
 
 class TokenBudgetWrapper(RunnableBinding):
@@ -86,7 +87,7 @@ class TokenBudgetWrapper(RunnableBinding):
 
     def bind_tools(self, *args: Any, **kwargs: Any) -> Runnable:
         """Delegate bind_tools to the underlying runnable so agents can use tools."""
-        bound_with_tools = getattr(self.bound, "bind_tools")(*args, **kwargs)
+        bound_with_tools = self.bound.bind_tools(*args, **kwargs)
         return self.__class__(
             bound=bound_with_tools,
             budget=self.budget,

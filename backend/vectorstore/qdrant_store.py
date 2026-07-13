@@ -39,8 +39,9 @@ def _get_client():
         return _CLIENT
     with _CLIENT_LOCK:
         if _CLIENT is None:
-            from backend.settings import get_settings
             from qdrant_client import QdrantClient
+
+            from backend.settings import get_settings
 
             s = get_settings()
             if not s.qdrant_url:
@@ -162,7 +163,6 @@ class QdrantStore:
         Used by write_ltm to enforce LTM_MAX_FACTS.
         """
         client = _get_client()
-        from qdrant_client.models import Filter, FieldCondition, MatchAny, ScrollRequest
 
         # Scroll all points to get their timestamps
         all_points = []

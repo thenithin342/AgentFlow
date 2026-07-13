@@ -224,6 +224,7 @@ def _read_ltm_qdrant(user_id: str, query: str) -> str:
 def _write_ltm_qdrant(user_id: str, facts: list[str], source_thread_id: str = "") -> None:
     try:
         from langchain_core.documents import Document
+
         from backend.vectorstore.qdrant_store import QdrantStore
 
         ts = datetime.now(timezone.utc).isoformat()
