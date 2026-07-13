@@ -31,8 +31,6 @@ import sqlite3
 # Must run before build_graph is imported so _DEFAULT_DB_PATH picks this up.
 os.environ.setdefault("CHECKPOINT_DB_PATH", "test_agentflow.db")
 
-import json
-
 import pytest
 
 from backend.graph import build_graph
