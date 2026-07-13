@@ -7,6 +7,7 @@ langchain-community>=0.3.0
 # LLM providers
 langchain-groq>=0.2.0
 langchain-google-genai>=2.0.0
+tiktoken>=0.7.0          # token counting for TokenBudgetWrapper (llm.py)
 
 # Tools
 langchain-tavily>=0.1.0
