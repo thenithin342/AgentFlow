@@ -54,24 +54,36 @@ from backend.settings import get_settings
 
 @pytest.fixture
 async def auth_headers(tmp_path, monkeypatch):
+    import sqlite3
+
     import backend.main as main_mod
     from backend import auth as auth_mod
 
     settings = get_settings()
     monkeypatch.setattr(settings, "data_dir", str(tmp_path))
     monkeypatch.setattr(settings, "jwt_secret", "test-secret-not-for-prod")
+
+    # Point checkpoint_db_path to a per-test SQLite file so authenticate_user
+    # reads from the same DB we populate below.  The login endpoint (and any
+    # other sync auth helper) calls _sync_get_user(settings.checkpoint_db_path)
+    # so we MUST patch this — writing only to users.json is no longer enough
+    # since the auth layer was migrated to SQLite in Sprint 4.
+    test_db = str(tmp_path / "test_users.db")
+    monkeypatch.setattr(settings, "checkpoint_db_path", test_db)
+
     # Also patch the module-level settings used by `require_user`'s
-    # `Depends(get_settings)` so it sees the test secret.
+    # `Depends(get_settings)` so it sees the test secret + test DB.
     monkeypatch.setattr(main_mod, "settings", settings, raising=False)
 
-    users_file = tmp_path / "users.json"
-    user = {
-        "tester": {
-            "password_hash": auth_mod.hash_password("test-pw"),
-            "created_at": 0.0,
-        }
-    }
-    users_file.write_text(json.dumps(user), encoding="utf-8")
+    # Bootstrap the users table and insert the test account.
+    auth_mod.init_user_table_sync(test_db)
+    with sqlite3.connect(test_db, timeout=10) as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO users (username, password_hash, created_at) "
+            "VALUES (?, ?, ?)",
+            ("tester", auth_mod.hash_password("test-pw"), 0.0),
+        )
+        conn.commit()
 
     token = auth_mod.issue_token(settings, "tester")
     return {"Authorization": f"Bearer {token}"}
