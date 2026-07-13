@@ -26,18 +26,73 @@ onto the module, so every subsequent access is a plain dict lookup.
 """
 
 import os
+import logging as _logging
 import sys
 import threading
 from typing import Any
 
 import groq
 from dotenv import load_dotenv
-from langchain_core.runnables import Runnable
+from langchain_core.runnables import Runnable, RunnableBinding
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_groq import ChatGroq
 from pydantic import SecretStr
 
 load_dotenv()
+
+# We use tiktoken for a fast, reliable token count estimate.
+import tiktoken
+_enc = tiktoken.get_encoding("cl100k_base")
+
+class TokenBudgetWrapper(RunnableBinding):
+    """Prevents silent context window overflow by bounding input tokens."""
+    budget: int = 100_000
+
+    def _check(self, input: Any) -> None:
+        messages = input.get("messages", []) if isinstance(input, dict) else input
+        total_text = " ".join(
+            m.content if hasattr(m, "content") else str(m.get("content", ""))
+            for m in (messages if isinstance(messages, list) else [messages])
+        )
+        tokens = len(_enc.encode(total_text, disallowed_special=()))
+        if tokens > self.budget:
+            _log = _logging.getLogger("agentflow.llm")
+            _log.error(
+                "token_budget_exceeded",
+                extra={"tokens": tokens, "budget": self.budget},
+            )
+            raise ValueError(
+                f"Context window budget exceeded (estimated {tokens:,} tokens > "
+                f"{self.budget:,} limit). Please start a new conversation or shorten "
+                f"your message."
+            )
+
+    def invoke(self, input: Any, config: Any = None, **kwargs: Any) -> Any:
+        self._check(input)
+        return super().invoke(input, config, **kwargs)
+
+    async def ainvoke(self, input: Any, config: Any = None, **kwargs: Any) -> Any:
+        self._check(input)
+        return await super().ainvoke(input, config, **kwargs)
+
+    def stream(self, input: Any, config: Any = None, **kwargs: Any) -> Any:
+        self._check(input)
+        yield from super().stream(input, config, **kwargs)
+
+    async def astream(self, input: Any, config: Any = None, **kwargs: Any) -> Any:
+        self._check(input)
+        async for chunk in super().astream(input, config, **kwargs):
+            yield chunk
+
+    def bind_tools(self, *args: Any, **kwargs: Any) -> Runnable:
+        """Delegate bind_tools to the underlying runnable so agents can use tools."""
+        bound_with_tools = getattr(self.bound, "bind_tools")(*args, **kwargs)
+        return self.__class__(
+            bound=bound_with_tools,
+            budget=self.budget,
+            config=self.config,
+            kwargs=self.kwargs,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -143,7 +198,10 @@ def get_llm_smart():
     if _llm_smart is None:
         with _llm_lock:
             if _llm_smart is None:
-                _llm_smart = _build_groq_pool("llama-3.3-70b-versatile")
+                _llm_smart = TokenBudgetWrapper(
+                    bound=_build_groq_pool("llama-3.3-70b-versatile"), 
+                    budget=100_000
+                )
     return _llm_smart
 
 
@@ -157,7 +215,10 @@ def get_llm_fast():
     if _llm_fast is None:
         with _llm_lock:
             if _llm_fast is None:
-                _llm_fast = _build_groq_pool("llama-3.1-8b-instant")
+                _llm_fast = TokenBudgetWrapper(
+                    bound=_build_groq_pool("llama-3.1-8b-instant"), 
+                    budget=100_000
+                )
     return _llm_fast
 
 

@@ -51,6 +51,7 @@ import useSSE from "./hooks/useSSE";
 import MessageBubble from "./components/Chat/MessageBubble";
 import ChatInput from "./components/Chat/ChatInput";
 import Sidebar from "./components/Sidebar/Sidebar";
+import AdminPage from "./pages/AdminPage";
 
 function streamAgentMeta(agent) {
   if (agent === "chat_agent") return "chat";
@@ -305,8 +306,15 @@ export default function App() {
         }
       }
     }, 60_000);
+
+    // Silent JWT renewal every 20 min (1,200,000 ms)
+    const refreshId = setInterval(() => {
+      import("./api/client").then(m => m.silentRefresh());
+    }, 1_200_000);
+
     return () => {
       clearInterval(id);
+      clearInterval(refreshId);
       window.removeEventListener("agentflow:auth_error", handleAuthError);
     };
   }, [authed]);
@@ -1192,7 +1200,7 @@ function ChatApp({ currentUser, onLogout }) {
         <TraceRail trace={trace} />
 
         <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", position: "relative" }}>
-          {/* Tab bar: Chat | Blog (Blog tab appears after a blog turn) */}
+          {/* Tab bar: Chat | Blog | Admin */}
           <div className="af-blog-tab-bar">
             <button
               className={`af-tab-btn ${activeTab === "chat" ? "active" : ""}`}
@@ -1214,6 +1222,14 @@ function ChatApp({ currentUser, onLogout }) {
                 }} />
               )}
             </button>
+            {currentUser === "admin" && (
+              <button
+                className={`af-tab-btn ${activeTab === "admin" ? "active" : ""}`}
+                onClick={() => setActiveTab("admin")}
+              >
+                ⚙️ Admin
+              </button>
+            )}
           </div>
 
           {/* Blog viewer tab */}
@@ -1296,6 +1312,11 @@ function ChatApp({ currentUser, onLogout }) {
                 </div>
               )}
             </div>
+          )}
+
+          {/* Admin tab */}
+          {activeTab === "admin" && (
+            <AdminPage />
           )}
 
           {/* Chat tab */}

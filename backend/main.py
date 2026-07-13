@@ -51,6 +51,7 @@ from fastapi.responses import JSONResponse
 
 from backend.logging_config import configure_logging, get_logger
 from backend.settings import get_settings
+from prometheus_fastapi_instrumentator import Instrumentator
 
 configure_logging()
 logger = get_logger("agentflow.api")
@@ -71,11 +72,11 @@ if settings.langchain_tracing_v2:
 
 from slowapi.errors import RateLimitExceeded
 
-from backend.auth import PUBLIC_PATHS, ensure_admin
+from backend.auth import PUBLIC_PATHS, ensure_admin, init_user_table_async
 from backend.dependencies import limiter
 from backend.graph.build_graph import builder
 from backend.rag.ingest import warm_embeddings
-from backend.routers import auth, chat, health, threads, upload
+from backend.routers import admin, auth, chat, health, threads, upload
 
 # ---------------------------------------------------------------------------
 # Lifespan: async graph + checkpointer + admin bootstrap
@@ -117,13 +118,20 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         try:
             app.state.checkpointer_cm = checkpointer_cm
             app.state.checkpointer = checkpointer
-            # Expose the underlying connection so /threads can query the
-            # checkpoints table directly. langgraph.checkpoint.alist requires
-            # `configurable.thread_id` even for global scans, which would
-            # force us to enumerate per thread — N round trips. Going direct
-            # to SQL is one query, indexed by the thread_id column.
             app.state.db_conn = getattr(checkpointer, "conn", None)
             app.state.checkpointer_kind = "postgres"
+
+            # ---- User table bootstrap (Sprint 4) ----
+            # For Postgres we use a separate aiosqlite connection for the users
+            # table so we don't depend on the psycopg connection type.
+            # If a native Postgres user table is needed later, swap this out.
+            import aiosqlite as _aiosqlite
+            _user_conn = await _aiosqlite.connect(settings.checkpoint_db_path, timeout=5.0)
+            await init_user_table_async(_user_conn)
+            app.state.user_db_conn = _user_conn
+            ensure_admin(settings)  # migrates JSON + creates bootstrap admin
+            # ---- end user table bootstrap ----
+
             app.state.graph = builder.compile(checkpointer=checkpointer)
             app.state.graph.name = "AgentFlow"
             await asyncio.to_thread(warm_embeddings)
@@ -136,6 +144,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 yield
             finally:
                 logger.info("shutting_down", backend="postgres")
+                await _user_conn.close()
                 await checkpointer_cm.__aexit__(None, None, None)
         except Exception:
             logger.exception("startup_failed", backend="postgres")
@@ -156,6 +165,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 # table directly. See postgres branch above for the why.
                 app.state.db_conn = conn
                 app.state.checkpointer_kind = "sqlite"
+
+                # ---- User table bootstrap (Sprint 4) ----
+                await init_user_table_async(conn)
+                app.state.user_db_conn = conn  # same conn — users table is in agentflow.db
+                ensure_admin(settings)  # migrates JSON + creates bootstrap admin
+                # ---- end user table bootstrap ----
+
                 app.state.graph = builder.compile(checkpointer=checkpointer)
                 app.state.graph.name = "AgentFlow"
                 await asyncio.to_thread(warm_embeddings)
@@ -192,6 +208,13 @@ app.add_middleware(
     allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
     allow_headers=["Content-Type", "Authorization", "X-API-Key", "X-Request-ID"],
 )
+
+# Prometheus metrics — instrument AFTER CORS so middleware wraps correctly.
+# exclude_paths avoids measuring health-check noise.
+Instrumentator(
+    excluded_handlers=["/healthz", "/readyz", "/metrics", "/favicon.ico"],
+    body_handlers=[],  # do NOT buffer response bodies — avoids BaseHTTPMiddleware body-loss bug
+).instrument(app).expose(app, include_in_schema=False)
 
 app.state.limiter = limiter
 
@@ -244,6 +267,8 @@ PUBLIC_PATHS.update(
         "/healthz",
         "/readyz",
         "/auth/login",
+        "/auth/refresh",
+        "/metrics",
         "/docs",
         "/openapi.json",
         "/redoc",
@@ -251,6 +276,7 @@ PUBLIC_PATHS.update(
 )
 
 
+app.include_router(admin.router)
 app.include_router(auth.router)
 app.include_router(health.router)
 app.include_router(chat.router)

@@ -1,19 +1,20 @@
 # AgentFlow — local development & production-deploy topology.
 #
-# Two services:
+# Services:
 #   - postgres   — durable checkpointer backend (opt-in via --profile postgres)
+#   - qdrant     — vector store for RAG + LTM (opt-in via --profile qdrant)
 #   - backend    — the FastAPI app, built from ./Dockerfile
 #
 # Reference: DEPLOYMENT.md section 3.3 "docker-compose topology".
 #
-# Dev (SQLite, no Postgres):
+# Dev (SQLite, no Postgres, no Qdrant — uses local FAISS):
 #   docker-compose up backend
 #
-# Dev + Postgres:
-#   docker-compose --profile postgres up
+# Dev + Qdrant (RAG/LTM stored in Qdrant, horizontally scalable):
+#   docker-compose --profile qdrant up
 #
-# Production single-node (requires POSTGRES_CONN_STRING set in .env):
-#   docker-compose --profile postgres up -d
+# Dev + Postgres + Qdrant (full production-like stack):
+#   docker-compose --profile postgres --profile qdrant up
 
 services:
   # ---------------------------------------------------------------------------
@@ -26,14 +27,11 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-agentflow}
-      # POSTGRES_PASSWORD must be set explicitly — no insecure default.
-      # For local dev: add POSTGRES_PASSWORD=<your-local-pass> to .env
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set (see .env.example)}
       POSTGRES_DB: ${POSTGRES_DB:-agentflow}
     volumes:
       - postgres_data:/var/lib/postgresql/data
     ports:
-      # Bind to localhost only so the dev DB is not exposed on the LAN.
       - "127.0.0.1:5432:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-agentflow} -d ${POSTGRES_DB:-agentflow}"]
@@ -41,6 +39,34 @@ services:
       timeout: 5s
       retries: 5
       start_period: 10s
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          memory: 128M
+
+  # ---------------------------------------------------------------------------
+  # Qdrant — vector store for RAG + LTM (opt-in; use --profile qdrant)
+  # ---------------------------------------------------------------------------
+  qdrant:
+    profiles: [qdrant]
+    image: qdrant/qdrant:latest
+    container_name: agentflow-qdrant
+    restart: unless-stopped
+    volumes:
+      - qdrant_data:/qdrant/storage
+    ports:
+      # REST API — used by the Python client
+      - "127.0.0.1:6333:6333"
+      # gRPC — optional high-throughput interface
+      - "127.0.0.1:6334:6334"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://localhost:6333/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
     deploy:
       resources:
         limits:
@@ -62,21 +88,27 @@ services:
       postgres:
         condition: service_healthy
         required: false
+      qdrant:
+        condition: service_healthy
+        required: false
     environment:
       # --- Required at runtime ---
       GROQ_API_KEY: ${GROQ_API_KEY:?GROQ_API_KEY is required}
       TAVILY_API_KEY: ${TAVILY_API_KEY:?TAVILY_API_KEY is required}
       JWT_SECRET: ${JWT_SECRET:?JWT_SECRET must be set to a 32+ byte secret in production}
       # --- Database ---
-      # When POSTGRES_CONN_STRING is set the app uses Postgres; otherwise SQLite.
-      # Accept it from the environment (e.g. Railway auto-inject or .env).
-      # Do NOT construct it here — passwords may contain URI-reserved chars.
       POSTGRES_CONN_STRING: ${POSTGRES_CONN_STRING:-}
       CHECKPOINT_DB_PATH: /app/agentflow.db
-      # --- Persistence dirs (mounted as volumes so data survives restarts) ---
+      # --- Persistence dirs ---
       DATA_DIR: /app/data
       FAISS_INDEX_DIR: /app/faiss_indexes
       LTM_INDEX_DIR: /app/ltm_indexes
+      # --- Qdrant (Sprint 4) — set QDRANT_URL to enable Qdrant backend ---
+      # When using the qdrant profile, this points to the local container.
+      # For Qdrant Cloud, override with the cloud URL from .env.
+      QDRANT_URL: ${QDRANT_URL:-http://qdrant:6333}
+      QDRANT_API_KEY: ${QDRANT_API_KEY:-}
+      QDRANT_PREFER_GRPC: ${QDRANT_PREFER_GRPC:-false}
       # --- Optional: LangSmith tracing ---
       LANGSMITH_API_KEY: ${LANGSMITH_API_KEY:-}
       LANGSMITH_TRACING: ${LANGSMITH_TRACING:-false}
@@ -109,6 +141,8 @@ services:
 
 volumes:
   postgres_data:
+    driver: local
+  qdrant_data:
     driver: local
   backend_data:
     driver: local

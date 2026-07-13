@@ -17,6 +17,11 @@ faiss-cpu>=1.8.0
 fastembed>=0.3.0
 pypdf>=4.1.0
 
+# Vector store — Qdrant (optional; required when QDRANT_URL is set)
+# Enables multi-replica / horizontally-scalable vector search for RAG + LTM.
+qdrant-client>=1.9.0
+langchain-qdrant>=0.1.3
+
 # Persistence
 langgraph-checkpoint-sqlite>=2.0.0
 langgraph-checkpoint-postgres>=2.0.0
@@ -42,3 +47,4 @@ structlog>=24.1.0
 filelock>=3.13.0
 
 # NOTE: test-only deps (pytest, pytest-asyncio) live in requirements-dev.txt.
+prometheus-fastapi-instrumentator>=7.0.0

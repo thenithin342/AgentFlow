@@ -1,13 +1,14 @@
 """
-RAG ingestion pipeline — PDF upload to FAISS index.
+RAG ingestion pipeline — PDF upload to vector store.
 
-Phase 7 implementation. Extracts text from a PDF with `PyPDFLoader`, chunks it
-with `RecursiveCharacterTextSplitter` (chunk_size=800, overlap=150 — matches
-DESIGN_DOC.md §6), embeds the chunks with a local sentence-transformers model
-(`all-MiniLM-L6-v2`, cached under the default HuggingFace cache dir so we do
-not burn Groq quota on embedding calls — see TECH_STACK.md §4), and persists
-the index to `faiss_indexes/{thread_id}/`. Retrieval is scoped per thread so
-one conversation's documents do not leak into another.
+Backend selection (Sprint 4):
+    - When QDRANT_URL is set → Qdrant collection per thread (horizontally
+      scalable, visible to all replicas immediately after upload).
+    - When QDRANT_URL is unset → per-thread FAISS index on disk (original
+      single-node behaviour, unchanged).
+
+Both backends use BAAI/bge-small-en-v1.5 (FastEmbed ONNX, ~80MB resident)
+so no re-embedding is needed when switching backends.
 
 Reference: DESIGN_DOC.md section 6 "RAG Pipeline", TECH_STACK.md section 4
 "Retrieval / RAG".
@@ -30,18 +31,42 @@ logger = logging.getLogger("agentflow.rag.ingest")
 
 INDEX_ROOT = Path(__file__).resolve().parent.parent.parent / "faiss_indexes"
 
-# Using FastEmbedEmbeddings (ONNX-based, ~80MB resident) instead of
-# sentence-transformers (PyTorch, ~350MB) so the app fits inside
-# Render / Railway free-tier 512MB containers.
 _EMBED_MODEL = "BAAI/bge-small-en-v1.5"
 _EMBEDDINGS: FastEmbedEmbeddings | None = None
 _EMBEDDINGS_LOCK = threading.Lock()
 _EMBEDDINGS_WARM = False  # public read-only flag for /readyz short-circuit
+
+# FAISS-only caches — not used in Qdrant path
 _RETRIEVERS: OrderedDict[str, Any] = OrderedDict()
 _MAX_RETRIEVERS = 1000
 _MAX_RETRIEVER_LOCKS = 1000
 _RETRIEVER_LOCKS: OrderedDict[str, threading.Lock] = OrderedDict()
 _RETRIEVER_LOCKS_GUARD = threading.Lock()
+
+
+# ---------------------------------------------------------------------------
+# Backend selection
+# ---------------------------------------------------------------------------
+
+
+def _use_qdrant() -> bool:
+    """Return True when Qdrant is configured (QDRANT_URL is set)."""
+    try:
+        from backend.settings import get_settings
+        return get_settings().use_qdrant
+    except Exception:
+        return False
+
+
+def _rag_collection_name(thread_id: str) -> str:
+    """One Qdrant collection per thread, named by SHA-256 hash."""
+    sha = hashlib.sha256(thread_id.encode("utf-8")).hexdigest()
+    return f"rag_{sha}"
+
+
+# ---------------------------------------------------------------------------
+# Shared embedding model (used by both FAISS and Qdrant paths)
+# ---------------------------------------------------------------------------
 
 
 def warm_embeddings() -> None:
@@ -51,12 +76,8 @@ def warm_embeddings() -> None:
 
 def _get_embeddings() -> FastEmbedEmbeddings:
     global _EMBEDDINGS, _EMBEDDINGS_WARM
-    # Fast path: already initialised. Avoid lock acquire on the hot path.
     if _EMBEDDINGS is not None:
         return _EMBEDDINGS
-    # Double-checked locking: under the lock, re-check the flag before
-    # instantiating, otherwise concurrent first-time callers would all
-    # load the (large) FastEmbed model and stomp each other.
     with _EMBEDDINGS_LOCK:
         if _EMBEDDINGS is None:
             _EMBEDDINGS = FastEmbedEmbeddings(model_name=_EMBED_MODEL)
@@ -64,17 +85,18 @@ def _get_embeddings() -> FastEmbedEmbeddings:
         return _EMBEDDINGS
 
 
-def _index_dir(thread_id: str) -> Path:
-    """Return the index directory for *thread_id*.
+# ---------------------------------------------------------------------------
+# FAISS helpers (single-node path — unchanged)
+# ---------------------------------------------------------------------------
 
-    Uses a SHA-256 hash of the full thread_id so that colons, slashes,
-    or other path-special characters cannot escape INDEX_ROOT, and so
-    that the resulting directory name is safe on all platforms.
-    The resolved path is verified to stay within INDEX_ROOT.
+
+def _index_dir(thread_id: str) -> Path:
+    """Return the FAISS index directory for *thread_id*.
+
+    Uses a SHA-256 hash so path-special characters cannot escape INDEX_ROOT.
     """
     safe = hashlib.sha256(thread_id.encode("utf-8")).hexdigest()
     idx_dir = INDEX_ROOT / safe
-    # Defensive: resolve and confirm containment (guards against symlink attacks)
     try:
         resolved = idx_dir.resolve()
         INDEX_ROOT.resolve()
@@ -107,7 +129,6 @@ def _check_model_tag(index_path: Path) -> bool:
     """Return True if the stored model tag matches _EMBED_MODEL."""
     tag_file = index_path / "embed_model.txt"
     if not tag_file.exists():
-        # Legacy index without a tag — assume compatible (back-compat).
         return True
     return tag_file.read_text(encoding="utf-8").strip() == _EMBED_MODEL
 
@@ -149,19 +170,22 @@ def _retriever_lock(thread_id: str) -> threading.Lock:
         return lock
 
 
+# ---------------------------------------------------------------------------
+# Public API — ingest_pdf
+# ---------------------------------------------------------------------------
+
+
 def ingest_pdf(
     file_path: str,
     thread_id: str,
     *,
     source_name: str | None = None,
 ) -> dict[str, Any]:
-    """Extract → chunk → embed → save a per-thread FAISS index.
+    """Extract → chunk → embed → save to the configured vector store.
 
     Returns ingest stats: ``document_id``, ``source``, ``pages``, ``chunks``.
 
-    The caller is responsible for validating ``thread_id`` *before* scoping it
-    to the user. We don't re-validate here because the index path is keyed on
-    the scoped id (e.g. ``user:admin:abc``) which the raw regex doesn't accept.
+    Automatically routes to Qdrant or FAISS based on QDRANT_URL.
     """
     basename = source_name or os.path.basename(file_path) or "document.pdf"
     docs = PyPDFLoader(file_path).load()
@@ -174,6 +198,69 @@ def ingest_pdf(
     if not chunks:
         raise ValueError("PDF contains no extractable text")
 
+    if _use_qdrant():
+        _ingest_qdrant(thread_id, chunks)
+    else:
+        _ingest_faiss(thread_id, chunks)
+
+    document_id = f"{basename}:{len(chunks)}"
+    return {
+        "document_id": document_id,
+        "source": basename,
+        "pages": len(docs),
+        "chunks": len(chunks),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Public API — get_retriever
+# ---------------------------------------------------------------------------
+
+
+def get_retriever(thread_id: str):
+    """Return a LangChain retriever for the given thread.
+
+    Automatically routes to Qdrant or FAISS based on QDRANT_URL.
+    """
+    if _use_qdrant():
+        return _get_retriever_qdrant(thread_id)
+    return _get_retriever_faiss(thread_id)
+
+
+# ---------------------------------------------------------------------------
+# Qdrant implementations
+# ---------------------------------------------------------------------------
+
+
+def _ingest_qdrant(thread_id: str, chunks: list) -> None:
+    """Upsert chunks into the thread's Qdrant collection."""
+    try:
+        from backend.vectorstore.qdrant_store import QdrantStore
+        store = QdrantStore(_rag_collection_name(thread_id))
+        store.add_documents(chunks)
+        logger.info(
+            "[RAG/Qdrant] ingested %d chunks for thread %s",
+            len(chunks),
+            thread_id[:16],
+        )
+    except Exception:
+        logger.exception("[RAG/Qdrant] ingest failed for thread %s", thread_id[:16])
+        raise
+
+
+def _get_retriever_qdrant(thread_id: str):
+    """Return a Qdrant-backed retriever for *thread_id*."""
+    from backend.vectorstore.qdrant_store import QdrantStore
+    store = QdrantStore(_rag_collection_name(thread_id))
+    return store.as_retriever(k=4)
+
+
+# ---------------------------------------------------------------------------
+# FAISS implementations (original, unchanged)
+# ---------------------------------------------------------------------------
+
+
+def _ingest_faiss(thread_id: str, chunks: list) -> None:
     lock = _retriever_lock(thread_id)
     with lock:
         out = _index_dir(thread_id)
@@ -190,23 +277,12 @@ def ingest_pdf(
         _write_model_tag(out)
         _RETRIEVERS.pop(thread_id, None)
 
-    document_id = f"{basename}:{len(chunks)}"
-    return {
-        "document_id": document_id,
-        "source": basename,
-        "pages": len(docs),
-        "chunks": len(chunks),
-    }
 
-
-def get_retriever(thread_id: str):
+def _get_retriever_faiss(thread_id: str):
     cached = _RETRIEVERS.get(thread_id)
     if cached is not None:
         _RETRIEVERS.move_to_end(thread_id)
         return cached
-    # thread_id arrives pre-scoped from the agent config (user:user:abc) and
-    # the raw regex above would reject it. Callers gate this through the
-    # HTTP layer / make_thread_id, so no re-validation here.
     lock = _retriever_lock(thread_id)
     with lock:
         cached = _RETRIEVERS.get(thread_id)

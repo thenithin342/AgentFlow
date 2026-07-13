@@ -2,5 +2,13 @@
   "admin": {
     "password_hash": "$2b$12$gEsSJfNTqdQIgoTFyXD1dudgPze.KoX9VJeM0zhbH6DKcBB8JcYR.",
     "created_at": 1783677064.4402041
+  },
+  "nithin": {
+    "password_hash": "$2b$12$PZbM2dcop5slUzryxrWDuu5x1fr8Z6etGicyBfpabjNYk8ph5Onbm",
+    "created_at": 1783919367.3875978
+  },
+  "test": {
+    "password_hash": "$2b$12$90WtVzj6hmqqNBNeRWoB6uOlKvwljxFNvMvwqqZbbQo8ZujqomSNC",
+    "created_at": 1783919500.0370252
   }
 }

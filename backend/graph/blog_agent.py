@@ -151,7 +151,7 @@ def _blog_to_markdown(blog: dict) -> str:
 # Node
 # ---------------------------------------------------------------------------
 
-def blog_writer_node(state: AgentState, config: RunnableConfig) -> dict:
+async def blog_writer_node(state: AgentState, config: RunnableConfig) -> dict:
     """ReAct blog writer agent with tavily_search + retrieve_documents.
 
     Returns:
@@ -174,7 +174,7 @@ def blog_writer_node(state: AgentState, config: RunnableConfig) -> dict:
     )
 
     try:
-        result = agent.invoke({"messages": state["messages"]}, config=config)
+        result = await agent.ainvoke({"messages": state["messages"]}, config=config)
     except Exception:
         logger.warning("[blog_writer] agent invocation failed", exc_info=True)
         return {

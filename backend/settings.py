@@ -71,6 +71,13 @@ class Settings(BaseSettings):
     checkpoint_db_path: str = "agentflow.db"
     data_dir: str = "data"  # holds FAISS indexes + LTM indexes
 
+    # ---- Qdrant (optional — enables multi-replica vector store) ----
+    # When set, both RAG and LTM use Qdrant instead of local FAISS.
+    # Leave unset to keep the default single-node FAISS behaviour.
+    qdrant_url: str | None = None           # e.g. https://<id>.cloud.qdrant.io
+    qdrant_api_key: str | None = None       # required for Qdrant Cloud
+    qdrant_prefer_grpc: bool = False        # set True for high-throughput deploys
+
     # ---- Auth ----
     # JWT settings. Secret is REQUIRED in production; if absent and
     # `environment != "production"`, a random ephemeral key is generated
@@ -112,6 +119,11 @@ class Settings(BaseSettings):
     @property
     def use_postgres(self) -> bool:
         return bool(self.postgres_conn_string and self.postgres_conn_string.strip())
+
+    @property
+    def use_qdrant(self) -> bool:
+        """True when a Qdrant URL is configured — enables Qdrant for RAG + LTM."""
+        return bool(self.qdrant_url and self.qdrant_url.strip())
 
     @property
     def is_production(self) -> bool:

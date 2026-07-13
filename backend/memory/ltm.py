@@ -1,25 +1,30 @@
 """
 Long-Term Memory (LTM) for AgentFlow.
 
-Stores user facts, preferences, and important context across threads using a
-per-user FAISS index (same embedding model as the RAG pipeline — all-MiniLM-L6-v2).
+Stores user facts, preferences, and important context across threads.
+
+Backend selection (Sprint 4):
+    - When QDRANT_URL is set → Qdrant collection per user (horizontally
+      scalable, shared across all replicas).
+    - When QDRANT_URL is unset → per-user FAISS index on disk (original
+      single-node behaviour, unchanged).
+
+Both paths use the same embedding model (BAAI/bge-small-en-v1.5) so
+switching backends does not require re-embedding existing memories.
 
 Design:
-    - Facts are extracted by `memory_writer_node` after each turn by asking the
-      LLM "what is worth remembering about this exchange?"
-    - Each fact is stored as an embedding in a per-user-id FAISS index with
-      metadata {fact, source_thread_id, timestamp}.
-    - `read_ltm(user_id, query)` retrieves the top-k most relevant memories
-      for the current turn's context query.
-    - User identity is tracked via `user_id` passed in the API request body
-      (defaults to "default" for single-user local setups).
+    - Facts are extracted by `memory_writer_node` after each turn by
+      asking the LLM "what is worth remembering about this exchange?".
+    - Each fact is stored as a vector with metadata
+      {fact, source_thread_id, timestamp}.
+    - `read_ltm(user_id, query)` retrieves the top-k most relevant
+      memories for the current turn's context query.
+    - User identity is tracked via `user_id` passed in the API request
+      body (defaults to "default" for single-user local setups).
 
-The LTM store lives under `ltm_indexes/{user_id}/` alongside `faiss_indexes/`.
-
-IMPORTANT — privacy note: LTM stores plaintext facts extracted from user
-conversations. For a single-user local project this is fine. A multi-user
-production deployment would need per-user encryption, consent flows, and a
-deletion endpoint. Those are out of scope for this portfolio project.
+IMPORTANT — privacy note: LTM stores plaintext facts extracted from
+user conversations. A multi-user production deployment needs per-user
+encryption, consent flows, and a deletion endpoint.
 """
 
 from __future__ import annotations
@@ -34,7 +39,7 @@ from pathlib import Path
 logger = logging.getLogger("agentflow.memory.ltm")
 
 LTM_ROOT = Path(__file__).resolve().parent.parent.parent / "ltm_indexes"
-_LTM_LOCK = threading.Lock()
+_LTM_LOCK = threading.Lock()   # used only by FAISS path
 
 # Max facts retrieved per query.
 LTM_TOP_K = 5
@@ -43,8 +48,29 @@ LTM_MAX_FACTS = 200
 
 
 # ---------------------------------------------------------------------------
-# Internal helpers
+# Backend selection
 # ---------------------------------------------------------------------------
+
+
+def _use_qdrant() -> bool:
+    """Return True when Qdrant is configured (QDRANT_URL is set)."""
+    try:
+        from backend.settings import get_settings
+        return get_settings().use_qdrant
+    except Exception:
+        return False
+
+
+def _ltm_collection_name(user_id: str) -> str:
+    """One Qdrant collection per user, named by SHA-256 hash for safety."""
+    sha = hashlib.sha256(user_id.encode("utf-8")).hexdigest()
+    return f"ltm_{sha}"
+
+
+# ---------------------------------------------------------------------------
+# FAISS helpers (single-node path — unchanged from Sprint 3)
+# ---------------------------------------------------------------------------
+
 
 def _get_embeddings():
     """Reuse the same FastEmbed model as the RAG pipeline to save memory."""
@@ -83,7 +109,11 @@ def _ltm_dir(user_id: str) -> Path:
                     _shutil.rmtree(str(legacy_dir), ignore_errors=True)
                     logger.info("[LTM] Migrated legacy index for user %s", _mask_id(user_id))
                 except Exception:
-                    logger.warning("[LTM] Failed to migrate legacy index for user %s", _mask_id(user_id), exc_info=True)
+                    logger.warning(
+                        "[LTM] Failed to migrate legacy index for user %s",
+                        _mask_id(user_id),
+                        exc_info=True,
+                    )
                 _LTM_MIGRATED.add(user_id)
     return new_dir
 
@@ -98,7 +128,9 @@ def _load_index(user_id: str):
         if faiss_file.is_file() and pkl_file.is_file():
             from backend.security import verify_file
             if not verify_file(pkl_file):
-                logger.error("[LTM] Integrity check failed for user %s index.pkl", _mask_id(user_id))
+                logger.error(
+                    "[LTM] Integrity check failed for user %s index.pkl", _mask_id(user_id)
+                )
                 return None
             return FAISS.load_local(
                 str(idx_dir),
@@ -123,12 +155,110 @@ def _save_index(user_id: str, index) -> None:
 # Public API
 # ---------------------------------------------------------------------------
 
+
 def read_ltm(user_id: str, query: str) -> str:
     """Retrieve the top-k facts most relevant to `query` from the LTM store.
 
     Returns a formatted string ready to inject into an agent system prompt.
     Returns an empty string if no memories exist or retrieval fails.
+    Automatically picks Qdrant or FAISS based on QDRANT_URL.
     """
+    if _use_qdrant():
+        return _read_ltm_qdrant(user_id, query)
+    return _read_ltm_faiss(user_id, query)
+
+
+def write_ltm(user_id: str, facts: list[str], source_thread_id: str = "") -> None:
+    """Store extracted facts into the user's LTM store.
+
+    Each fact is stored as a vector with metadata including the source
+    thread and timestamp, so memories can be attributed and deleted later.
+    Automatically picks Qdrant or FAISS based on QDRANT_URL.
+    """
+    if not facts:
+        return
+
+    try:
+        from backend.settings import get_settings
+        settings = get_settings()
+        if not getattr(settings, "ltm_enabled", True):
+            return
+    except Exception:
+        pass
+
+    if _use_qdrant():
+        _write_ltm_qdrant(user_id, facts, source_thread_id)
+    else:
+        _write_ltm_faiss(user_id, facts, source_thread_id)
+
+
+# ---------------------------------------------------------------------------
+# Qdrant implementation
+# ---------------------------------------------------------------------------
+
+
+def _read_ltm_qdrant(user_id: str, query: str) -> str:
+    try:
+        from backend.vectorstore.qdrant_store import QdrantStore
+        store = QdrantStore(_ltm_collection_name(user_id))
+
+        # If the collection doesn't exist yet, return empty
+        if store.count() == 0:
+            return ""
+
+        docs = store.similarity_search(query, k=LTM_TOP_K)
+        if not docs:
+            return ""
+
+        lines = ["## Long-term memory (facts about this user / conversation history)"]
+        for doc in docs:
+            fact = doc.page_content.strip()
+            if fact:
+                lines.append(f"- {fact}")
+        return "\n".join(lines)
+    except Exception:
+        logger.warning("[LTM] read_ltm_qdrant failed for user %s", _mask_id(user_id), exc_info=True)
+        return ""
+
+
+def _write_ltm_qdrant(user_id: str, facts: list[str], source_thread_id: str = "") -> None:
+    try:
+        from langchain_core.documents import Document
+        from backend.vectorstore.qdrant_store import QdrantStore
+
+        ts = datetime.now(timezone.utc).isoformat()
+        docs = [
+            Document(
+                page_content=fact.strip(),
+                metadata={"source_thread_id": source_thread_id, "timestamp": ts},
+            )
+            for fact in facts
+            if fact.strip()
+        ]
+        if not docs:
+            return
+
+        store = QdrantStore(_ltm_collection_name(user_id))
+        store.add_documents(docs)
+
+        # Evict oldest facts if over the cap
+        total = store.count()
+        if total > LTM_MAX_FACTS:
+            store.delete_oldest(keep=LTM_MAX_FACTS)
+
+        logger.info("[LTM] wrote %d facts for user %s (qdrant)", len(docs), _mask_id(user_id))
+    except Exception:
+        logger.warning(
+            "[LTM] write_ltm_qdrant failed for user %s", _mask_id(user_id), exc_info=True
+        )
+
+
+# ---------------------------------------------------------------------------
+# FAISS implementation (original, unchanged)
+# ---------------------------------------------------------------------------
+
+
+def _read_ltm_faiss(user_id: str, query: str) -> str:
     try:
         with _LTM_LOCK:
             index = _load_index(user_id)
@@ -145,24 +275,11 @@ def read_ltm(user_id: str, query: str) -> str:
                 lines.append(f"- {fact}")
         return "\n".join(lines)
     except Exception:
-        logger.warning("[LTM] read_ltm failed for user %s", _mask_id(user_id), exc_info=True)
+        logger.warning("[LTM] read_ltm_faiss failed for user %s", _mask_id(user_id), exc_info=True)
         return ""
 
 
-def write_ltm(user_id: str, facts: list[str], source_thread_id: str = "") -> None:
-    """Store extracted facts into the user's LTM FAISS index.
-
-    Each fact is stored as a Document with metadata including the source thread
-    and timestamp, so memories can be attributed and potentially deleted later.
-    """
-    if not facts:
-        return
-        
-    from backend.settings import get_settings
-    settings = get_settings()
-    if not getattr(settings, "ltm_enabled", True): # Optional config gate
-        return
-        
+def _write_ltm_faiss(user_id: str, facts: list[str], source_thread_id: str = "") -> None:
     try:
         from langchain_community.vectorstores import FAISS
         from langchain_core.documents import Document
@@ -185,18 +302,25 @@ def write_ltm(user_id: str, facts: list[str], source_thread_id: str = "") -> Non
                 index = FAISS.from_documents(docs, _get_embeddings())
             else:
                 index.add_documents(docs)
-                
+
             if index.index.ntotal > LTM_MAX_FACTS:
                 ids = list(index.index_to_docstore_id.values())
                 all_docs = [index.docstore.search(i) for i in ids if index.docstore.search(i)]
                 all_docs.sort(key=lambda d: d.metadata.get("timestamp", ""))
                 keep_docs = all_docs[-LTM_MAX_FACTS:]
                 index = FAISS.from_documents(keep_docs, _get_embeddings())
-                
+
             _save_index(user_id, index)
-        logger.info("[LTM] wrote %d facts for user %s", len(docs), _mask_id(user_id))
+        logger.info("[LTM] wrote %d facts for user %s (faiss)", len(docs), _mask_id(user_id))
     except Exception:
-        logger.warning("[LTM] write_ltm failed for user %s", _mask_id(user_id), exc_info=True)
+        logger.warning(
+            "[LTM] write_ltm_faiss failed for user %s", _mask_id(user_id), exc_info=True
+        )
+
+
+# ---------------------------------------------------------------------------
+# Fact extraction (backend-agnostic)
+# ---------------------------------------------------------------------------
 
 
 def extract_facts(turn_text: str, llm) -> list[str]:
@@ -227,7 +351,6 @@ def extract_facts(turn_text: str, llm) -> list[str]:
         response = llm.invoke([HumanMessage(content=prompt)])
         text = response.content if hasattr(response, "content") else str(response)
         text = text if isinstance(text, str) else str(text)
-        # Extract JSON array from the response
         start = text.find("[")
         end = text.rfind("]")
         if start != -1 and end != -1:
