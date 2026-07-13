@@ -87,7 +87,7 @@ class TokenBudgetWrapper(RunnableBinding):
 
     def bind_tools(self, *args: Any, **kwargs: Any) -> Runnable:
         """Delegate bind_tools to the underlying runnable so agents can use tools."""
-        bound_with_tools = self.bound.bind_tools(*args, **kwargs)
+        bound_with_tools = self.bound.bind_tools(*args, **kwargs)  # type: ignore[attr-defined]
         return self.__class__(
             bound=bound_with_tools,
             budget=self.budget,
