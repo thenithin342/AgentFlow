@@ -7,6 +7,29 @@ Versioning: [Semantic Versioning](https://semver.org/)
 
 ---
 
+## [Unreleased]
+
+### Fixed (audit remediation — 2026-09-12)
+- **SafeHTTPSConnection** now inherits `SafeHTTPConnection` so SSRF pin and tunnel block work correctly on HTTPS targets
+- **code_interpreter** `__globals__` escape via `math`/`statistics` closed by `_SafeModule` wrapper
+- **STM compressor** returns `RemoveMessage` objects so `add_messages` reducer actually prunes old turns
+- **Router fallback** writes `router_fallback=True` to graph state; emits `[FALLBACK]` SSE sentinel surfaced in the execution trace rail
+- **SlowAPI 422** on `/chat` and `/auth/login` — decorator order swapped, `Annotated[…, Body()]` added
+- **Qdrant → FAISS failover** in `get_retriever()` when Qdrant is unreachable
+- **SSE timeout** — `asyncio.timeout(300s)` wraps `astream_events`; `[ERROR]` + `[DONE]` emitted on expiry
+- **Health probe** — Postgres async engine cached at module level (not recreated per `/readyz` call)
+- **LLM config** — Groq/Google key reads route through `Settings` exclusively; `dummy1`/`dummy2` aliases removed
+- **SSE CRLF** — `sse()` normalises `\r\n` before splitting to prevent bare `\r` in `data:` lines
+- **401 storm** — concurrent refresh calls serialised via shared in-flight Promise in `client.js`
+- **FAISS index delete** — `DELETE /threads/:id` now uses `_index_dir()` hash path (fixes Windows colon crash)
+- **Source maps** — `vite.config.js` changed to `sourcemap: "hidden"` (maps generated but not served publicly)
+- **JWT secret** — test secret padded to 32 bytes (HS256 minimum); `InsecureKeyLengthWarning` suppressed in `pytest.ini`
+- **CI** — frontend job added (vitest + vite build); `test_eval.py` marked `@pytest.mark.eval` and skipped in CI via `-m 'not eval'`
+- **requirements.txt** — `groq` and `langchain-text-splitters` added to match `pyproject.toml`
+- **Railway removed** — `railway.toml` and `nixpacks.toml` deleted; deployment targets are Render (backend) + Vercel (frontend) only
+
+---
+
 ## [1.0.0] — 2026-07-13 🚀
 
 ### Summary

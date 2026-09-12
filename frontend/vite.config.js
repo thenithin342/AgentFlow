@@ -47,7 +47,7 @@ export default defineConfig(({ mode }) => {
 
   return {
     plugins: [react()],
-    build: { sourcemap: true },
+    build: { sourcemap: "hidden" },
     server: {
       port: 5173,
       proxy: proxyTargets,

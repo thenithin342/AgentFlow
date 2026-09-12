@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { setToken, decodeToken } from "./auth";
+import { apiUrl } from "./api/client";
 
 /**
  * Login screen for AgentFlow.
@@ -28,7 +29,7 @@ export default function LoginScreen({ onSuccess }) {
     setSubmitting(true);
     setError(null);
     try {
-      const res = await fetch("/auth/login", {
+      const res = await fetch(apiUrl("/auth/login"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({

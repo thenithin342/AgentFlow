@@ -99,6 +99,13 @@ export default function useSSE({ threadId, showError, reviewRequired, setReviewR
       return;
     }
 
+    if (!res.body) {
+      setIsStreaming(false);
+      setTrace((t) => [...t.map((e) => (e.active ? { ...e, active: false } : e)), { node: "router", label: "error (no body)", time: now() }]);
+      showError("Server returned a response with no body (streaming not supported).");
+      return;
+    }
+
     const streamingId = uuid();
     const agentTimestamp = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     
@@ -116,7 +123,99 @@ export default function useSSE({ threadId, showError, reviewRequired, setReviewR
     let buffer = "";
     let draft = "";
     let sentinel = null;
+    let sentinelDetail = "";
     let sourcesCount = 0;
+    // SSE events: backend splits one token containing "\n" into multiple
+    // `data:` lines terminated by a blank line. Those lines belong to ONE
+    // event and must be rejoined with "\n" — treating each line as its own
+    // token silently drops newlines and collapses markdown tables/headings
+    // into a single paragraph.
+    let pendingDataLines = [];
+
+    const handlePayload = (rawPayload) => {
+      const parsed = parseSSEPayload(rawPayload);
+
+      if (parsed.kind === "done") { sentinel = "[DONE]"; return true; }
+      if (parsed.kind === "interrupt") { sentinel = "[INTERRUPT]"; return true; }
+      if (parsed.kind === "error") { sentinel = "[ERROR]"; sentinelDetail = (parsed.value || "").replace(/^\[ERROR\]\s*/, ""); return true; }
+      if (parsed.kind === "sources") { sourcesCount = parsed.value; streamSourcesRef.current = parsed.value; return false; }
+      if (parsed.kind === "final") { if (!draft) { draft = parsed.value; pendingDraftRef.current = draft; } return false; }
+      if (parsed.kind === "fallback") {
+        // Router LLM failed — add a subtle trace entry but don’t block the response.
+        setTrace((t) => [...t, { node: "router", label: "degraded (chat fallback)", time: now() }]);
+        return false;
+      }
+      if (parsed.kind === "tool_start") {
+        setTrace((t) => [...t.map((e) => (e.active ? { ...e, active: false } : e)), { node: parsed.value, label: "tool…", active: true, time: now() }]);
+        return false;
+      }
+      if (parsed.kind === "node_start") {
+        const { node, startMs } = parsed.value;
+        setTrace((t) => {
+          if (t.length > 0 && t[t.length - 1].node === node) return t;
+          const next = t.map((e) => (e.active ? { ...e, active: false } : e));
+          next.push({ node, label: "working…", active: true, time: now(), startMs });
+          return next;
+        });
+        if (SSE_TOKEN_NODES.has(node)) {
+          activeStreamAgentRef.current = node;
+          setMessages((m) => {
+            const next = [...m];
+            const idx = next.findIndex((x) => x.id === streamingId);
+            if (idx === -1 || !next[idx].streaming) return next;
+            next[idx] = { ...next[idx], agent: node, meta: `${streamAgentMeta(node)} · working…` };
+            return next;
+          });
+        }
+        return false;
+      }
+      if (parsed.kind === "node_end") {
+        const node = parsed.value;
+        setTrace((t) => {
+          for (let i = t.length - 1; i >= 0; i--) {
+            if (t[i].node === node && t[i].startMs) {
+              const ms = Date.now() - t[i].startMs;
+              const next = [...t];
+              next[i] = { ...t[i], label: "done", active: false, latency: (ms / 1000).toFixed(1) + "s", startMs: null };
+              return next;
+            }
+          }
+          return t;
+        });
+        return false;
+      }
+      if (parsed.kind === "skip") return false;
+
+      // Only advance the stall watchdog on real token output — not on SSE
+      // keep-alive comments (`: keep-alive`) which arrive as empty chunks
+      // and would mask genuine LLM stalls if they reset lastTokenAtMsRef.
+      lastTokenAtMsRef.current = Date.now();
+
+      draft += parsed.value;
+      pendingDraftRef.current = draft;
+      if (!rafPendingRef.current) {
+        rafPendingRef.current = true;
+        requestAnimationFrame(() => {
+          rafPendingRef.current = false;
+          if (streamGenRef.current !== myGen) return;
+          const d = pendingDraftRef.current;
+          const nowMs = Date.now();
+          const metaDue = nowMs - lastMetaUpdateMsRef.current >= 250;
+          const startMs = synthStartMsRef.current ?? nowMs;
+          const elapsed = ((nowMs - startMs) / 1000).toFixed(1) + "s";
+          const short = streamAgentMeta(activeStreamAgentRef.current);
+          setMessages((m) => {
+            const next = [...m];
+            const idx = next.findIndex((x) => x.id === streamingId);
+            if (idx === -1) return next;
+            next[idx] = { ...next[idx], text: d, ...(metaDue ? { meta: `${short} · ${elapsed}` } : {}) };
+            return next;
+          });
+          if (metaDue) lastMetaUpdateMsRef.current = nowMs;
+        });
+      }
+      return false;
+    };
 
     const STALL_MS = 60_000;
     const watchdog = setInterval(() => {
@@ -147,82 +246,29 @@ export default function useSSE({ threadId, showError, reviewRequired, setReviewR
         buffer += decoder.decode(value, { stream: true });
         const lines = buffer.split("\n");
         buffer = lines.pop();
-        for (const line of lines) {
-          if (!line.startsWith("data: ")) continue;
-          const rawPayload = line.slice(6);
-          const parsed = parseSSEPayload(rawPayload);
-
-          if (parsed.kind === "done") { sentinel = "[DONE]"; break; }
-          if (parsed.kind === "interrupt") { sentinel = "[INTERRUPT]"; break; }
-          if (parsed.kind === "error") { sentinel = "[ERROR]"; break; }
-          if (parsed.kind === "sources") { sourcesCount = parsed.value; streamSourcesRef.current = parsed.value; continue; }
-          if (parsed.kind === "final") { if (!draft) { draft = parsed.value; pendingDraftRef.current = draft; } continue; }
-          if (parsed.kind === "tool_start") {
-            setTrace((t) => [...t.map((e) => (e.active ? { ...e, active: false } : e)), { node: parsed.value, label: "tool…", active: true, time: now() }]);
+        for (const rawLine of lines) {
+          const line = rawLine.endsWith("\r") ? rawLine.slice(0, -1) : rawLine;
+          if (line.startsWith("data: ")) {
+            pendingDataLines.push(line.slice(6));
             continue;
           }
-          if (parsed.kind === "node_start") {
-            const { node, startMs } = parsed.value;
-            setTrace((t) => {
-              if (t.length > 0 && t[t.length - 1].node === node) return t;
-              const next = t.map((e) => (e.active ? { ...e, active: false } : e));
-              next.push({ node, label: "working…", active: true, time: now(), startMs });
-              return next;
-            });
-            if (SSE_TOKEN_NODES.has(node)) {
-              activeStreamAgentRef.current = node;
-              setMessages((m) => {
-                const next = [...m];
-                const idx = next.findIndex((x) => x.id === streamingId);
-                if (idx === -1 || !next[idx].streaming) return next;
-                next[idx] = { ...next[idx], agent: node, meta: `${streamAgentMeta(node)} · working…` };
-                return next;
-              });
-            }
+          if (line === "") {
+            // Blank line = end of one SSE event. Rejoin multi-line data.
+            if (pendingDataLines.length === 0) continue;
+            const rawPayload = pendingDataLines.join("\n");
+            pendingDataLines = [];
+            if (handlePayload(rawPayload)) break;
+            if (sentinel) break;
             continue;
           }
-          if (parsed.kind === "node_end") {
-            const node = parsed.value;
-            setTrace((t) => {
-              for (let i = t.length - 1; i >= 0; i--) {
-                if (t[i].node === node && t[i].startMs) {
-                  const ms = Date.now() - t[i].startMs;
-                  const next = [...t];
-                  next[i] = { ...t[i], label: "done", active: false, latency: (ms / 1000).toFixed(1) + "s", startMs: null };
-                  return next;
-                }
-              }
-              return t;
-            });
-            continue;
-          }
-          if (parsed.kind === "skip") continue;
-
-          draft += parsed.value;
-          pendingDraftRef.current = draft;
-          if (!rafPendingRef.current) {
-            rafPendingRef.current = true;
-            requestAnimationFrame(() => {
-              rafPendingRef.current = false;
-              if (streamGenRef.current !== myGen) return;
-              const d = pendingDraftRef.current;
-              const nowMs = Date.now();
-              const metaDue = nowMs - lastMetaUpdateMsRef.current >= 250;
-              const startMs = synthStartMsRef.current ?? nowMs;
-              const elapsed = ((nowMs - startMs) / 1000).toFixed(1) + "s";
-              const short = streamAgentMeta(activeStreamAgentRef.current);
-              setMessages((m) => {
-                const next = [...m];
-                const idx = next.findIndex((x) => x.id === streamingId);
-                if (idx === -1) return next;
-                next[idx] = { ...next[idx], text: d, ...(metaDue ? { meta: `${short} · ${elapsed}` } : {}) };
-                return next;
-              });
-              if (metaDue) lastMetaUpdateMsRef.current = nowMs;
-            });
-          }
+          // Ignore SSE comments (e.g. ": keep-alive") and unknown fields.
         }
         if (sentinel) break;
+      }
+      // Flush a trailing event not terminated by a blank line.
+      if (!sentinel && pendingDataLines.length > 0) {
+        handlePayload(pendingDataLines.join("\n"));
+        pendingDataLines = [];
       }
     } catch (err) {
       if (err.name === "AbortError") {
@@ -257,11 +303,12 @@ export default function useSSE({ threadId, showError, reviewRequired, setReviewR
       setTrace((t) => [...t.map((e) => (e.active ? { ...e, active: false } : e)), { node: "human_review", label: "awaiting…", active: true, time: now() }]);
       setEditingReview(false);
     } else if (sentinel === "[ERROR]") {
+      const detail = (sentinelDetail || "").trim();
       setMessages((m) => {
         const next = [...m];
         const idx = next.findIndex((x) => x.id === streamingId);
         if (idx !== -1) {
-          next[idx] = { ...next[idx], streaming: false, text: next[idx].text || "An error occurred. Please try again.", error: true };
+          next[idx] = { ...next[idx], streaming: false, text: detail || next[idx].text || "An error occurred. Please try again.", error: true };
         }
         return next;
       });

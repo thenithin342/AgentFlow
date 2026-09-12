@@ -31,6 +31,11 @@ import sqlite3
 # Must run before build_graph is imported so _DEFAULT_DB_PATH picks this up.
 os.environ.setdefault("CHECKPOINT_DB_PATH", "test_agentflow.db")
 
+# Disable Qdrant for tests — qdrant_client / langchain_qdrant are not installed
+# in the dev/test environment and the Cloud URL in .env is not accessible from CI.
+# Tests use FAISS + SQLite exclusively.
+os.environ["QDRANT_URL"] = ""
+
 import pytest
 
 from backend.graph import build_graph
@@ -59,7 +64,7 @@ async def auth_headers(tmp_path, monkeypatch):
 
     settings = get_settings()
     monkeypatch.setattr(settings, "data_dir", str(tmp_path))
-    monkeypatch.setattr(settings, "jwt_secret", "test-secret-not-for-prod")
+    monkeypatch.setattr(settings, "jwt_secret", "test-secret-not-for-prod-xxxxxxxx")
 
     # Point checkpoint_db_path to a per-test SQLite file so authenticate_user
     # reads from the same DB we populate below.  The login endpoint (and any

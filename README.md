@@ -10,7 +10,7 @@
 [![React](https://img.shields.io/badge/React-18+-61DAFB?style=flat-square&logo=react&logoColor=black)](https://react.dev)
 [![Qdrant](https://img.shields.io/badge/Qdrant-Cloud-DC244C?style=flat-square&logo=qdrant&logoColor=white)](https://qdrant.tech)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow?style=flat-square)](LICENSE)
-[![Release](https://img.shields.io/github/v/release/thenithin342/AgentFlow?style=flat-square&color=brightgreen)](https://github.com/thenithin342/AgentFlow/releases/tag/v1.0.0)
+[![Release](https://img.shields.io/github/v/release/thenithin342/AgentFlow?style=flat-square&color=brightgreen)](https://github.com/thenithin342/AgentFlow/releases/tag/v0.9.0)
 
 Stateful graph routing &middot; Parallel agent execution &middot; Durable checkpointing &middot; Human-in-the-loop review &middot; RAG over uploaded PDFs &middot; Token streaming
 

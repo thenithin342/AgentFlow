@@ -29,7 +29,14 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 logger = logging.getLogger("agentflow.rag.ingest")
 
-INDEX_ROOT = Path(__file__).resolve().parent.parent.parent / "faiss_indexes"
+def _get_index_root() -> Path:
+    """Return FAISS index root from env (FAISS_INDEX_DIR) or source-tree fallback."""
+    env_val = os.environ.get("FAISS_INDEX_DIR", "").strip()
+    if env_val:
+        return Path(env_val)
+    return Path(__file__).resolve().parent.parent.parent / "faiss_indexes"
+
+INDEX_ROOT: Path = _get_index_root()
 
 _EMBED_MODEL = "BAAI/bge-small-en-v1.5"
 _EMBEDDINGS: FastEmbedEmbeddings | None = None
@@ -220,10 +227,22 @@ def ingest_pdf(
 def get_retriever(thread_id: str):
     """Return a LangChain retriever for the given thread.
 
-    Automatically routes to Qdrant or FAISS based on QDRANT_URL.
+    Routing priority:
+    1. Qdrant, if QDRANT_URL is configured and Qdrant is reachable.
+    2. FAISS (local), as a fallback when Qdrant raises an exception or
+       when QDRANT_URL is not set.
+    3. None if neither has data for this thread.
     """
     if _use_qdrant():
-        return _get_retriever_qdrant(thread_id)
+        try:
+            return _get_retriever_qdrant(thread_id)
+        except Exception:
+            logger.warning(
+                "[RAG] Qdrant unavailable for thread %s — falling back to FAISS.",
+                thread_id[:16],
+                exc_info=True,
+            )
+            # Fall through to FAISS
     return _get_retriever_faiss(thread_id)
 
 

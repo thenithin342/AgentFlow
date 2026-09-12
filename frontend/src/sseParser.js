@@ -9,6 +9,7 @@ export function parseSSEPayload(rawPayload) {
 
   if (payload === "[DONE]") return { kind: "done" };
   if (payload === "[INTERRUPT]") return { kind: "interrupt" };
+  if (payload === "[FALLBACK]") return { kind: "fallback" };
   if (payload.startsWith("[ERROR]")) return { kind: "error", value: payload };
 
   if (payload.startsWith("[SOURCES:") && payload.endsWith("]")) {

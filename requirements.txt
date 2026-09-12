@@ -6,6 +6,7 @@ langchain-community>=0.3.0
 
 # LLM providers
 langchain-groq>=0.2.0
+groq>=0.9.0                    # direct Groq client (groq.RateLimitError used in conftest)
 langchain-google-genai>=2.0.0
 tiktoken>=0.7.0          # token counting for TokenBudgetWrapper (llm.py)
 
@@ -17,6 +18,7 @@ langchain-tavily>=0.1.0
 faiss-cpu>=1.8.0
 fastembed>=0.3.0
 pypdf>=4.1.0
+langchain-text-splitters>=0.3.0  # RecursiveCharacterTextSplitter in rag/ingest.py
 
 # Vector store — Qdrant (optional; required when QDRANT_URL is set)
 # Enables multi-replica / horizontally-scalable vector search for RAG + LTM.

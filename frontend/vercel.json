@@ -29,6 +29,14 @@
       "destination": "https://agentflow-pl48.onrender.com/healthz"
     },
     {
+      "source": "/readyz",
+      "destination": "https://agentflow-pl48.onrender.com/readyz"
+    },
+    {
+      "source": "/admin/:path*",
+      "destination": "https://agentflow-pl48.onrender.com/admin/:path*"
+    },
+    {
       "source": "/(.*)",
       "destination": "/index.html"
     }

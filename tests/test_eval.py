@@ -68,6 +68,7 @@ def exact_match_evaluator(run, example) -> dict:
     actual = run.outputs.get("output")
     return {"key": "exact_match", "score": 1.0 if expected == actual else 0.0}
 
+@pytest.mark.eval
 @pytest.mark.skipif(os.environ.get("LANGCHAIN_API_KEY") in (None, "dummy_key_for_ci", ""), reason="No LangSmith API key")
 def test_langsmith_evaluation():
     ensure_dataset()

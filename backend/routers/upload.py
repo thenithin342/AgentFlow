@@ -1,4 +1,7 @@
-from __future__ import annotations
+# NOTE: `from __future__ import annotations` intentionally omitted here.
+# FastAPI inspects File(...)/UploadFile parameters at import time; postponed
+# annotation evaluation (PEP 563) turns UploadFile into ForwardRef('UploadFile')
+# which FastAPI cannot resolve, causing FastAPIError at startup.
 
 import asyncio
 import os

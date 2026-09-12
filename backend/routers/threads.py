@@ -241,8 +241,8 @@ async def delete_thread(
         raise HTTPException(status_code=500, detail="internal server error")
 
     try:
-        from backend.rag.ingest import INDEX_ROOT
-        idx_path = INDEX_ROOT / scoped
+        from backend.rag.ingest import _index_dir
+        idx_path = _index_dir(scoped)
         if idx_path.is_dir():
             await asyncio.to_thread(shutil.rmtree, str(idx_path))
             deleted_faiss = True

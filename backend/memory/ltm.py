@@ -32,13 +32,21 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
 logger = logging.getLogger("agentflow.memory.ltm")
 
-LTM_ROOT = Path(__file__).resolve().parent.parent.parent / "ltm_indexes"
+def _get_ltm_root() -> Path:
+    """Return LTM index root from env (LTM_INDEX_DIR) or source-tree fallback."""
+    env_val = os.environ.get("LTM_INDEX_DIR", "").strip()
+    if env_val:
+        return Path(env_val)
+    return Path(__file__).resolve().parent.parent.parent / "ltm_indexes"
+
+LTM_ROOT: Path = _get_ltm_root()
 _LTM_LOCK = threading.Lock()   # used only by FAISS path
 
 # Max facts retrieved per query.

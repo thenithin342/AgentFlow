@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import time
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
 from backend.auth import (
@@ -127,14 +127,14 @@ async def create_user(
     return UserResponse(username=new_user.username, created_at=new_user.created_at)
 
 
-@router.delete("/users/{username}", status_code=204)
+@router.delete("/users/{username}")
 async def delete_user(
     username: str,
     request: Request,
     settings: Settings = Depends(get_settings),
     _admin: CurrentUser = Depends(require_admin),
-) -> None:
-    """Delete a user by username (Admin only).
+) -> Response:
+    """Delete a user by username (Admin only). Returns 204 No Content.
 
     You cannot delete the admin account itself.
     """
@@ -152,7 +152,7 @@ async def delete_user(
         raise HTTPException(status_code=404, detail=f"user '{safe_username}' not found")
 
     logger.info("user_deleted", admin=_admin.username, deleted_user=safe_username)
-    # 204 No Content — return None implicitly
+    return Response(status_code=204)
 
 
 @router.put("/users/{username}/password", response_model=UserResponse)

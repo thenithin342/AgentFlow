@@ -10,7 +10,7 @@
 
 ## 2. LLM Providers (free tier)
 
-**Groq** (`langchain-groq`) is primary: `llama-3.3-70b-versatile` for the Router and Synthesizer (needs real reasoning), `llama-3.1-8b-instant` for the Research, Analysis, and Chat agent nodes (fast, reliable tool calling, much higher free-tier rate limit at 30k TPM vs. 6k TPM for the 70b model). **Google AI Studio** (`langchain-google-genai`, `gemini-2.0-flash`) is the fallback if Groq's rate limits are hit during heavy testing — generous 1M tokens/day free allowance and equally strong tool calling. Local **Ollama** running `Qwen3-8B` is an optional fully-offline path for development without burning API quota, given Nithin's existing local setup (Intel Iris Xe iGPU, 16GB RAM).
+**Groq** (`langchain-groq`) is primary: `llama-3.3-70b-versatile` for the Router and Synthesizer (needs real reasoning), `llama-3.1-8b-instant` for the Research, Analysis, and Chat agent nodes (fast, reliable tool calling, much higher free-tier rate limit at 30k TPM vs. 6k TPM for the 70b model). **Google AI Studio** (`langchain-google-genai`, `gemini-2.5-flash`) is the fallback if Groq's rate limits are hit during heavy testing — generous 1M tokens/day free allowance and equally strong tool calling. Local **Ollama** running `Qwen3-8B` is an optional fully-offline path for development without burning API quota, given Nithin's existing local setup (Intel Iris Xe iGPU, 16GB RAM).
 
 ## 3. Tools
 

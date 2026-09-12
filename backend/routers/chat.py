@@ -4,9 +4,9 @@ import asyncio
 import json
 from collections.abc import AsyncIterator
 from datetime import datetime, timezone
-from typing import Literal
+from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from langchain_core.messages import HumanMessage
 from pydantic import BaseModel, field_validator
@@ -27,6 +27,14 @@ from backend.validation import validate_thread_id
 
 logger = get_logger("agentflow.chat")
 settings = get_settings()
+
+# Total wall-clock ceiling for a single /chat stream. This bounds the
+# worst-case latency introduced by LLM retries (3 Groq keys × retries +
+# Gemini fallback) and prevents zombie SSE connections from exhausting
+# uvicorn worker threads. Override with STREAM_TIMEOUT_SECONDS env var.
+import os as _os
+
+_STREAM_TIMEOUT_S: float = float(_os.environ.get("STREAM_TIMEOUT_SECONDS", "300"))
 
 router = APIRouter(tags=["chat"])
 
@@ -52,11 +60,11 @@ class ReviewRequest(BaseModel):
     action: Literal["approve", "edit"]
     edited_response: str | None = None
 
-@router.post("/chat")
 @limiter.limit(f"{settings.rate_limit_per_minute}/minute")
+@router.post("/chat")
 async def chat(
     request: Request,
-    req: ChatRequest,
+    req: Annotated[ChatRequest, Body()],
     user: CurrentUser = Depends(require_user),
 ) -> StreamingResponse:
     config = config_for(user, req.thread_id)
@@ -69,56 +77,71 @@ async def chat(
     async def event_stream() -> AsyncIterator[bytes]:
         active_node: dict[str, str | None] = {"name": None}
         try:
-            async for event in graph.astream_events(
-                input_state, config=config, version="v2"
-            ):
-                node = event.get("metadata", {}).get("langgraph_node", "")
+            async with asyncio.timeout(_STREAM_TIMEOUT_S):
+                try:
+                    async for event in graph.astream_events(
+                        input_state, config=config, version="v2"
+                    ):
+                        node = event.get("metadata", {}).get("langgraph_node", "")
 
-                if event.get("event") == "on_tool_start":
-                    tool_name = (
-                        event.get("name")
-                        or event.get("data", {}).get("name")
-                        or "tool"
-                    )
-                    yield sse(f"[TOOL_START:{tool_name}]")
-                    continue
+                        if event.get("event") == "on_tool_start":
+                            tool_name = (
+                                event.get("name")
+                                or event.get("data", {}).get("name")
+                                or "tool"
+                            )
+                            yield sse(f"[TOOL_START:{tool_name}]")
+                            continue
 
-                if event.get("event") == "on_chain_start" and node in TRACE_STREAM_NODES:
-                    active_node["name"] = node
-                    ts = (
-                        datetime.now(timezone.utc)
-                        .isoformat(timespec="milliseconds")
-                        .replace("+00:00", "Z")
-                    )
-                    yield sse(f"[NODE_START:{node}|t={ts}]")
-                    continue
+                        if event.get("event") == "on_chain_start" and node in TRACE_STREAM_NODES:
+                            active_node["name"] = node
+                            ts = (
+                                datetime.now(timezone.utc)
+                                .isoformat(timespec="milliseconds")
+                                .replace("+00:00", "Z")
+                            )
+                            yield sse(f"[NODE_START:{node}|t={ts}]")
+                            continue
 
-                if event.get("event") == "on_chain_end" and node in TRACE_STREAM_NODES:
-                    if active_node["name"] == node:
-                        active_node["name"] = None
-                    yield sse(f"[NODE_END:{node}]")
-                    continue
+                        if event.get("event") == "on_chain_end" and node in TRACE_STREAM_NODES:
+                            if active_node["name"] == node:
+                                active_node["name"] = None
+                            yield sse(f"[NODE_END:{node}]")
+                            continue
 
-                if event.get("event") != "on_chat_model_stream":
-                    continue
-                if node not in SSE_TOKEN_NODES:
-                    continue
-                chunk = event.get("data", {}).get("chunk")
-                if chunk is None:
-                    continue
-                text = content_to_str(getattr(chunk, "content", None))
-                if text:
-                    yield sse(text)
-        except Exception:
-            logger.exception("chat_failed", thread_id=req.thread_id, user=user.username)
-            yield sse("[ERROR] internal server error")
-            return
+                        if event.get("event") != "on_chat_model_stream":
+                            continue
+                        if node not in SSE_TOKEN_NODES:
+                            continue
+                        chunk = event.get("data", {}).get("chunk")
+                        if chunk is None:
+                            continue
+                        text = content_to_str(getattr(chunk, "content", None))
+                        if text:
+                            yield sse(text)
+                except Exception:
+                    logger.exception("chat_failed", thread_id=req.thread_id, user=user.username)
+                    yield sse("[ERROR] an internal error occurred")
+                    yield sse("[DONE]")
+                    return
 
-        try:
-            snap = await graph.aget_state(config)
-        except Exception:
-            logger.exception("post_stream_aget_state_failed")
-            yield sse("[ERROR] internal server error")
+                try:
+                    snap = await graph.aget_state(config)
+                except Exception:
+                    logger.exception("post_stream_aget_state_failed")
+                    yield sse("[ERROR] an internal error occurred")
+                    yield sse("[DONE]")
+                    return
+
+        except asyncio.TimeoutError:
+            logger.warning(
+                "chat_stream_timeout",
+                thread_id=req.thread_id,
+                user=user.username,
+                timeout_s=_STREAM_TIMEOUT_S,
+            )
+            yield sse("[ERROR] stream timed out")
+            yield sse("[DONE]")
             return
 
         if snapshot_has_interrupt(snap):
@@ -127,6 +150,8 @@ async def chat(
         else:
             sources = (snap.values or {}).get("sources") or []
             yield sse(f"[SOURCES:{len(sources)}]")
+            if (snap.values or {}).get("router_fallback"):
+                yield sse("[FALLBACK]")
             final_text = (snap.values or {}).get("final_response") or ""
             if final_text:
                 yield sse(f"[FINAL:{json.dumps(final_text)}]")

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import time as _time
+from typing import Any
 
 import aiosqlite
 from fastapi import APIRouter, Request
@@ -14,6 +15,28 @@ from backend.settings import get_settings
 
 logger = get_logger("agentflow.health")
 settings = get_settings()
+
+# Cached async SQLAlchemy engine — created at most once per process so that
+# every /readyz probe reuses the same connection pool instead of allocating
+# a new pool and disposing it on every call (each disposal tears down
+# keep-alive sockets and re-handshakes on next probe).
+_pg_engine: Any | None = None
+
+
+async def _get_pg_engine():
+    """Return (or create) the cached Postgres async engine."""
+    global _pg_engine
+    if _pg_engine is None:
+        from sqlalchemy.ext.asyncio import create_async_engine
+
+        assert settings.postgres_conn_string is not None
+        _pg_engine = create_async_engine(
+            settings.postgres_conn_string,
+            pool_size=1,
+            max_overflow=0,
+            pool_pre_ping=True,
+        )
+    return _pg_engine
 
 router = APIRouter(tags=["health"])
 
@@ -38,16 +61,21 @@ async def readyz(request: Request) -> JSONResponse:
     try:
         if settings.use_postgres:
             from sqlalchemy import text
-            from sqlalchemy.ext.asyncio import create_async_engine
 
-            assert settings.postgres_conn_string is not None
-            engine = create_async_engine(settings.postgres_conn_string)
+            engine = await _get_pg_engine()
             try:
                 async with engine.connect() as conn:
                     await conn.execute(text("SELECT 1"))
                 db_ok = True
-            finally:
-                await engine.dispose()
+            except Exception:
+                # Pool error — discard cached engine so next probe rebuilds it.
+                global _pg_engine
+                try:
+                    await engine.dispose()
+                except Exception:  # noqa: BLE001
+                    pass
+                _pg_engine = None
+                raise
         else:
             async with aiosqlite.connect(settings.checkpoint_db_path, timeout=2.0) as db:
                 await db.execute("SELECT 1")

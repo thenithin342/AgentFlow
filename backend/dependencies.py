@@ -22,11 +22,17 @@ def config_for(user: CurrentUser, thread_id: str) -> dict:
     return {"configurable": {"thread_id": scoped, "user_id": user.username}}
 
 def sse(payload: str | bytes) -> bytes:
-    """Format a single Server-Sent Event chunk."""
+    """Format a single Server-Sent Event chunk.
+
+    Normalises \r\n → \n so bare \r characters never appear inside a
+    ``data:`` line (the SSE spec treats \r alone as a line terminator).
+    """
     if isinstance(payload, bytes):
         payload = payload.decode("utf-8")
     if not isinstance(payload, str):
         payload = str(payload)
+    # Normalise Windows line endings before splitting.
+    payload = payload.replace("\r\n", "\n").replace("\r", "\n")
     if "\n" not in payload:
         return f"data: {payload}\n\n".encode()
     body = "".join(f"data: {line}\n" for line in payload.split("\n"))

@@ -38,16 +38,35 @@ export function parseCitations(text) {
   if (!text) return [];
   const out = [];
   let m;
+  // Capture URL greedily up to whitespace, then strip trailing unmatched
+  // closing delimiters and prose punctuation. Balanced parens (e.g. Wikipedia
+  // URLs like /wiki/Foo_(bar)) are preserved; unmatched ) . , ; : ' " are trimmed.
   const re = /\[(\d+)\]\s+(https?:\/\/\S+)/g;
   try {
     while ((m = re.exec(text)) !== null) {
-      let host = m[2];
+      let url = m[2];
+      // Strip trailing prose punctuation and unmatched closing delimiters.
+      // Repeat until stable so e.g. "url)." strips both ) and . correctly.
+      let prev;
+      do {
+        prev = url;
+        // Remove trailing punctuation that is clearly not part of the URL.
+        url = url.replace(/[.,;:'"]+$/, "");
+        // Remove a trailing ) only if it has no matching ( in the URL.
+        if (url.endsWith(")")) {
+          const opens = (url.match(/\(/g) || []).length;
+          const closes = (url.match(/\)/g) || []).length;
+          if (closes > opens) url = url.slice(0, -1);
+        }
+      } while (url !== prev);
+
+      let host = url;
       try {
-        host = new URL(m[2]).hostname.replace(/^www\./, "");
+        host = new URL(url).hostname.replace(/^www\./, "");
       } catch {
         // Malformed URL — fall back to the raw match
       }
-      out.push({ n: Number(m[1]), url: m[2], host });
+      out.push({ n: Number(m[1]), url, host });
     }
   } catch {
     return out;

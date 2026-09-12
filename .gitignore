@@ -32,5 +32,17 @@ diff_output.txt
 
 # Scratch/one-off dev scripts
 scratch_*.py
+test_code.py
+vitebuild_*.log
+# Bootstrap user store (runtime-created from ADMIN_PASSWORD)
+data/users.json
 # Per-user LTM FAISS indexes
 ltm_indexes/
+# Python build/editable-install metadata (untracked from git; kept on disk)
+agentflow.egg-info/
+
+# Kilo editor scratch directory (remediation plans, scratch files)
+.kilo/
+# Railway config (not used — deployment targets are Render + Vercel only)
+railway.toml
+nixpacks.toml

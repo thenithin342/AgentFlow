@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 
+from langchain_core.messages import RemoveMessage
 from langchain_core.runnables import RunnableConfig
 
 from backend.graph.messages import content_to_str, is_human_message
@@ -153,24 +154,24 @@ def stm_compressor_node(state: AgentState, config: RunnableConfig) -> dict:
         return {"turn_count": turn_count}
 
     older = messages[: len(messages) - STM_KEEP_RECENT]
-    recent = messages[len(messages) - STM_KEEP_RECENT :]
 
     try:
         from backend.llm import llm_fast
         from backend.memory.stm import build_stm_prefix
         summary = compress_messages(older, llm_fast)
         prefix = build_stm_prefix(summary)
-        new_messages = ([prefix] if prefix else []) + recent
+        # Delete the older messages via RemoveMessage so add_messages
+        # reducer actually removes them instead of appending.
+        removals = [RemoveMessage(id=m.id) for m in older if hasattr(m, "id") and m.id]
+        new_msgs = removals + ([prefix] if prefix else [])
         logger.info(
             "[STM] compressed %d messages into summary (%d chars); turn=%d",
-            len(older),
-            len(summary),
-            turn_count,
+            len(older), len(summary), turn_count,
         )
         return {
             "turn_count": turn_count,
             "stm_summary": summary,
-            "messages": new_messages,
+            "messages": new_msgs,
         }
     except Exception:
         logger.warning("[STM] compression failed at turn %d", turn_count, exc_info=True)

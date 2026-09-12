@@ -123,7 +123,9 @@ No explanation, no punctuation, no extra text.
 
 # --- Helpers ----------------------------------------------------------------
 
-_VALID_LABELS = {"research", "analysis", "chat", "blog"}
+# Ordered tuple — iteration order must be deterministic so multi-label
+# LLM responses always resolve to the same label.
+_VALID_LABELS = ("research", "analysis", "chat", "blog")
 _PUNCT = ",.!?:;\"'`"
 
 
@@ -172,6 +174,7 @@ def router_node(state: AgentState) -> dict:
 
     try:
         label = _route_for_message(user_text)
+        fallback = False
     except Exception:
         # Groq 5xx, network blip, malformed response — any of these would
         # otherwise propagate and 500 the whole graph run. "chat" is the
@@ -183,9 +186,11 @@ def router_node(state: AgentState) -> dict:
             exc_info=True,
         )
         label = "chat"
+        fallback = True
 
     return {
         "route": label,
+        "router_fallback": fallback,
         # Reset per-turn scratch fields so stale agent_output / sources /
         # final_response / blog_output from a prior turn cannot leak into the
         # new route.

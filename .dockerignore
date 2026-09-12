@@ -51,10 +51,10 @@ agentflow.db-wal
 test_agentflow.db
 test_agentflow.db-shm
 test_agentflow.db-wal
-# Exclude runtime data directories; keep the committed seed artifacts
-# (data/users.json is the empty bootstrap store provisioned at startup).
+# Exclude all runtime data — DB files, FAISS indexes, user store.
+# users.json is NOT included in the image: the bootstrap admin is created
+# from ADMIN_PASSWORD at startup, not from a committed seed file.
 data/
-!data/users.json
 faiss_indexes/
 ltm_indexes/
 

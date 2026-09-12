@@ -110,6 +110,12 @@ class Settings(BaseSettings):
     google_api_key: str | None = None
     tavily_api_key: str | None = None
     agentflow_require_groq: bool = False
+    # Model IDs — env-overridable so a provider decommission doesn't brick prod.
+    # Defaults are current Groq IDs (Sep 2026). llama-3.1-8b-instant /
+    # llama-3.3-70b-versatile retired 2026-08-16.
+    groq_fast_model: str = "openai/gpt-oss-20b"
+    groq_smart_model: str = "openai/gpt-oss-120b"
+    google_model: str = "gemini-2.5-flash"
 
     # ---- Derived helpers ----
     @property

@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import hashlib
+import time as _time
+from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+import jwt as _jwt
+from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from pydantic import BaseModel
 
 from backend.auth import authenticate_user, issue_token
@@ -19,9 +22,9 @@ class LoginRequest(BaseModel):
     username: str
     password: str
 
-@router.post("/login")
 @limiter.limit(f"{settings.rate_limit_auth_per_minute}/minute")
-async def login(req: LoginRequest, request: Request, settings: Settings = Depends(get_settings)) -> dict:
+@router.post("/login")
+async def login(req: Annotated[LoginRequest, Body()], request: Request, settings: Settings = Depends(get_settings)) -> dict:
     """Exchange username/password for a JWT."""
     if len(req.password) > 1024 or len(req.username) > 64:
         raise HTTPException(status_code=400, detail="invalid credentials")
@@ -41,8 +44,8 @@ async def login(req: LoginRequest, request: Request, settings: Settings = Depend
     }
 
 
-@router.post("/refresh")
 @limiter.limit(f"{settings.rate_limit_auth_per_minute}/minute")
+@router.post("/refresh")
 async def refresh(request: Request, settings: Settings = Depends(get_settings)) -> dict:
     """Issue a fresh JWT using a recently expired one.
 
@@ -54,6 +57,18 @@ async def refresh(request: Request, settings: Settings = Depends(get_settings)) 
         raise HTTPException(status_code=401, detail="missing token")
 
     token = auth_header[7:].strip()
+
+    # --- Freshness gate: only allow refresh within REFRESH_WINDOW_DAYS of expiry ---
+    REFRESH_WINDOW_SECONDS = 7 * 24 * 60 * 60  # 7 days
+    try:
+        unverified = _jwt.decode(token, options={"verify_signature": False})
+        token_exp = unverified.get("exp", 0)
+        if _time.time() > token_exp + REFRESH_WINDOW_SECONDS:
+            raise HTTPException(status_code=401, detail="token too old to refresh")
+    except _jwt.DecodeError:
+        # Malformed token — cannot decode at all
+        raise HTTPException(status_code=401, detail="invalid token")
+    # HTTPException (e.g. "too old") propagates naturally — do NOT catch it here
 
     from backend.auth import db_get_user, verify_token
     username = verify_token(settings, token, ignore_expiration=True)

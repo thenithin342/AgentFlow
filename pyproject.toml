@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agentflow"
-version = "0.8.0"
+version = "0.9.0"
 description = "A multi-agent RAG application using FastAPI, LangGraph, and React"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -22,7 +22,6 @@ dependencies = [
     "langgraph-checkpoint-postgres",
     "asyncpg",
     "psycopg[binary]",
-    "gunicorn",
     "python-multipart",
     "slowapi",
     "pyjwt",
@@ -31,7 +30,9 @@ dependencies = [
     "structlog",
     "langchain-core",
     "langchain-community",
+    "langchain-text-splitters",
     "langchain-groq",
+    "groq",
     "langchain-google-genai",
     "langchain-tavily",
     "fastembed",
@@ -43,7 +44,8 @@ dependencies = [
 dev = [
     "pytest",
     "pytest-asyncio~=0.24.0",
-    "httpx"
+    "httpx",
+    "langsmith",
 ]
 
 [tool.setuptools.packages.find]

@@ -101,20 +101,31 @@ class TokenBudgetWrapper(RunnableBinding):
 # ---------------------------------------------------------------------------
 
 def _collect_groq_keys() -> list[str]:
-    """Return all non-empty Groq API keys defined in the environment.
+    """Return all non-empty Groq API keys from Settings (authoritative source).
 
-    Primary key: GROQ_API_KEY
-    Secondary:   dummy1  (alias GROQ_API_KEY_2)
-    Tertiary:    dummy2  (alias GROQ_API_KEY_3)
+    Primary key: GROQ_API_KEY  (settings.groq_api_key)
+    Secondary:   GROQ_API_KEY_2 (settings.groq_api_key_2)
+    Tertiary:    GROQ_API_KEY_3 (settings.groq_api_key_3)
 
     Each is stripped of whitespace and surrounding quotes before use.
     Keys that are missing or blank are silently skipped.
     """
-    candidates = [
-        os.environ.get("GROQ_API_KEY", ""),
-        os.environ.get("dummy1", ""),
-        os.environ.get("dummy2", ""),
-    ]
+    try:
+        from backend.settings import get_settings as _gs
+        s = _gs()
+        candidates = [
+            s.groq_api_key or "",
+            s.groq_api_key_2 or "",
+            s.groq_api_key_3 or "",
+        ]
+    except Exception:
+        # Settings unavailable at import time (e.g. unit tests with no .env) —
+        # fall back to raw env so the module still loads.
+        candidates = [
+            os.environ.get("GROQ_API_KEY", ""),
+            os.environ.get("GROQ_API_KEY_2", ""),
+            os.environ.get("GROQ_API_KEY_3", ""),
+        ]
     seen: set[str] = set()
     keys: list[str] = []
     for k in candidates:
@@ -172,11 +183,18 @@ def _build_groq_pool(model: str) -> Runnable:
 
 
 def _build_fallback() -> ChatGoogleGenerativeAI | None:
-    google_key = os.environ.get("GOOGLE_API_KEY", "").strip().strip('"').strip("'")
+    try:
+        from backend.settings import get_settings as _gs
+        s = _gs()
+        google_key = (s.google_api_key or "").strip().strip('"').strip("'")
+        model = s.google_model
+    except Exception:
+        google_key = os.environ.get("GOOGLE_API_KEY", "").strip().strip('"').strip("'")
+        model = os.environ.get("GOOGLE_MODEL", "gemini-2.5-flash")
     if not google_key:
         return None
     return ChatGoogleGenerativeAI(
-        model="gemini-2.0-flash",
+        model=model,
         temperature=0,
         api_key=google_key,
         max_retries=3,
@@ -194,30 +212,39 @@ _llm_lock = threading.Lock()
 
 
 def get_llm_smart():
-    """Smart-tier pool: llama-3.3-70b-versatile across all Groq keys + Gemini fallback."""
+    """Smart-tier pool: reasoning model across all Groq keys + Gemini fallback."""
     global _llm_smart
     if _llm_smart is None:
         with _llm_lock:
             if _llm_smart is None:
+                try:
+                    from backend.settings import get_settings
+
+                    model = get_settings().groq_smart_model
+                except Exception:
+                    model = os.environ.get("GROQ_SMART_MODEL", "openai/gpt-oss-120b")
                 _llm_smart = TokenBudgetWrapper(
-                    bound=_build_groq_pool("llama-3.3-70b-versatile"), 
+                    bound=_build_groq_pool(model),
                     budget=100_000
                 )
     return _llm_smart
 
 
 def get_llm_fast():
-    """Fast-tier pool: llama-3.1-8b-instant across all Groq keys + Gemini fallback.
-
-    Using the supported llama-3.1-8b-instant model. Rotating across 3 keys 
-    multiplies the 6K TPM limit to ~18K TPM effective.
+    """Fast-tier pool: cheap tool-calling model across all Groq keys + Gemini fallback.
     """
     global _llm_fast
     if _llm_fast is None:
         with _llm_lock:
             if _llm_fast is None:
+                try:
+                    from backend.settings import get_settings
+
+                    model = get_settings().groq_fast_model
+                except Exception:
+                    model = os.environ.get("GROQ_FAST_MODEL", "openai/gpt-oss-20b")
                 _llm_fast = TokenBudgetWrapper(
-                    bound=_build_groq_pool("llama-3.1-8b-instant"), 
+                    bound=_build_groq_pool(model),
                     budget=100_000
                 )
     return _llm_fast

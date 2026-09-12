@@ -132,6 +132,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             ensure_admin(settings)  # migrates JSON + creates bootstrap admin
             # ---- end user table bootstrap ----
 
+            # Swap blog_writer to async node for the FastAPI server.
+            # The sync graph (build_compiled_graph / tests / CLI) uses
+            # blog_writer_node_sync from build_graph.py.
+            from backend.graph.blog_agent import blog_writer_node as _async_blog
+            builder.nodes["blog_writer"].runnable = _async_blog
+
             app.state.graph = builder.compile(checkpointer=checkpointer)
             app.state.graph.name = "AgentFlow"
             await asyncio.to_thread(warm_embeddings)
@@ -172,6 +178,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 ensure_admin(settings)  # migrates JSON + creates bootstrap admin
                 # ---- end user table bootstrap ----
 
+                # Swap blog_writer to async node for the FastAPI server.
+                from backend.graph.blog_agent import blog_writer_node as _async_blog
+                builder.nodes["blog_writer"].runnable = _async_blog
+
                 app.state.graph = builder.compile(checkpointer=checkpointer)
                 app.state.graph.name = "AgentFlow"
                 await asyncio.to_thread(warm_embeddings)
@@ -188,7 +198,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 yield
             finally:
                 logger.info("shutting_down", backend="sqlite")
-                await conn.close()
 
 
 # ---------------------------------------------------------------------------

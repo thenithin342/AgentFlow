@@ -47,7 +47,7 @@ from backend.graph.agents import (
     chat_agent_node,
     research_agent_node,
 )
-from backend.graph.blog_agent import blog_writer_node
+from backend.graph.blog_agent import blog_writer_node_sync
 from backend.graph.human_review import human_review_node
 from backend.graph.memory_nodes import (
     memory_reader_node,
@@ -73,7 +73,7 @@ builder.add_node("router", router_node)
 builder.add_node("research_agent", research_agent_node)
 builder.add_node("analysis_agent", analysis_agent_node)
 builder.add_node("chat_agent", chat_agent_node)
-builder.add_node("blog_writer", blog_writer_node)
+builder.add_node("blog_writer", blog_writer_node_sync)
 builder.add_node("synthesizer", synthesizer_node)
 builder.add_node("human_review", human_review_node)
 

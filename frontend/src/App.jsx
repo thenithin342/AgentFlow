@@ -21,62 +21,17 @@ import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
  * different host.
  */
 
-const API_BASE = import.meta.env.VITE_API_BASE || "";
-const apiUrl = (path) => `${API_BASE}${path}`;
-
-async function apiFetch(path, options = {}) {
-  // Inject the JWT as a Bearer header on every call. The backend
-  // (backend/auth.py:require_user) resolves identity from this header
-  // and scopes thread_ids per-user (backend/main.py:_config_for). If
-  // the token is missing or expired the backend returns 401 and the
-  // caller is responsible for redirecting to login.
-  const token = getToken();
-  const headers = { ...(options.headers || {}) };
-  if (token && !headers.Authorization) {
-    headers.Authorization = `Bearer ${token}`;
-  }
-  const res = await fetch(apiUrl(path), { ...options, headers });
-  if (res.status === 401) {
-    clearToken();
-    window.dispatchEvent(new Event("agentflow:auth_error"));
-  }
-  return res;
-}
-
 import { MAX_MESSAGE_CHARS, MAX_UPLOAD_BYTES, TRACE_STREAM_NODES, SSE_TOKEN_NODES } from "./constants";
 import { parseSSEPayload } from "./sseParser";
 import { getToken, clearToken, isExpired, getUsername } from "./auth";
+import { apiFetch, apiUrl } from "./api/client";
+import { streamAgentMeta, agentLabelFromRoute, formatLastSeen, uuid, parseCitations, now } from "./utils";
 import LoginScreen from "./LoginScreen.jsx";
 import useSSE from "./hooks/useSSE";
 import MessageBubble from "./components/Chat/MessageBubble";
 import ChatInput from "./components/Chat/ChatInput";
 import Sidebar from "./components/Sidebar/Sidebar";
 import AdminPage from "./pages/AdminPage";
-
-function streamAgentMeta(agent) {
-  if (agent === "chat_agent") return "chat";
-  if (agent === "research_agent") return "research";
-  if (agent === "analysis_agent") return "analysis";
-  if (agent === "blog_writer") return "blog";
-  if (agent === "memory_reader") return "ltm read";
-  if (agent === "memory_writer") return "ltm write";
-  if (agent === "stm_compressor") return "stm compress";
-  return agent;
-}
-
-function agentLabelFromRoute(route) {
-  if (route === "chat") return "chat_agent";
-  if (route === "research") return "research_agent";
-  if (route === "analysis") return "analysis_agent";
-  if (route === "blog") return "blog_writer";
-  return "synthesizer";
-}
-
-function formatLastSeen(iso) {
-  if (!iso) return "—";
-  const d = new Date(iso);
-  return Number.isFinite(d.getTime()) ? d.toLocaleString() : "—";
-}
 
 const AGENT_COLORS = {
   router: "var(--af-router)",
@@ -90,46 +45,6 @@ const AGENT_COLORS = {
   memory_writer: "var(--af-memory)",
   stm_compressor: "var(--af-memory)",
 };
-
-// Citation parser: the synthesizer emits "Sources: [1] https://… [2] https://…"
-// in `final_response`. Extract (n, url) pairs and a friendly host label so
-// the UI can render clickable chips. Host strips a leading "www." for visual
-// cleanliness (chips for "en.wikipedia.org" not "www.en.wikipedia.org").
-const uuid = () => {
-  const webCrypto = globalThis.crypto;
-  if (webCrypto?.randomUUID) return webCrypto.randomUUID();
-  if (!webCrypto?.getRandomValues) {
-    throw new Error("Web Crypto API is required to generate thread IDs");
-  }
-  return ([1e7] + -1e3 + -4e3 + -8e3 + -1e11).replace(/[018]/g, c =>
-    (c ^ (webCrypto.getRandomValues(new Uint8Array(1))[0] & (15 >> (c / 4)))).toString(16)
-  );
-};
-
-function parseCitations(text) {
-  if (!text) return [];
-  const out = [];
-  let m;
-  const re = /\[(\d+)\]\s+(https?:\/\/\S+)/g;
-  try {
-    while ((m = re.exec(text)) !== null) {
-      let host = m[2];
-      try {
-        host = new URL(m[2]).hostname.replace(/^www\./, "");
-      } catch {
-        // Malformed URL — fall back to the raw match
-      }
-      out.push({ n: Number(m[1]), url: m[2], host });
-    }
-  } catch {
-    return out;
-  }
-  return out;
-}
-
-function now() {
-  return new Date().toLocaleTimeString("en-GB", { hour12: false });
-}
 
 const TRACE_RAIL_STYLE = {
   width: 176,

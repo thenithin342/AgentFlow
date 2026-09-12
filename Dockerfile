@@ -123,15 +123,15 @@ ENTRYPOINT ["/usr/bin/tini", "--"]
 # Defaults: 1 worker, 4 threads, 60s graceful-shutdown timeout.
 # Override at deploy time with `-w 4` etc. via Railway's CLI or
 # docker-compose command.
-CMD ["uvicorn", "backend.main:app", \
-     "--host", "0.0.0.0", \
-     "--port", "8000", \
-     "--workers", "1", \
-     "--timeout-keep-alive", "60", \
-     "--log-level", "info"]
+CMD ["sh", "-c", "uvicorn backend.main:app \
+     --host 0.0.0.0 \
+     --port ${PORT:-8000} \
+     --workers 1 \
+     --timeout-keep-alive 60 \
+     --log-level info"]
 
 # Liveness probe. HEAD /healthz must be cheap and side-effect-free
 # (no DB calls, no graph invocation). We use --fail so curl exits
 # non-zero on any 4xx/5xx, which is what Docker's HEALTHCHECK needs.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
-    CMD curl --fail --silent --max-time 3 http://localhost:8000/healthz || exit 1
+    CMD curl --fail --silent --max-time 3 http://localhost:${PORT:-8000}/healthz || exit 1

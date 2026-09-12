@@ -106,7 +106,9 @@ services:
       # --- Qdrant (Sprint 4) — set QDRANT_URL to enable Qdrant backend ---
       # When using the qdrant profile, this points to the local container.
       # For Qdrant Cloud, override with the cloud URL from .env.
-      QDRANT_URL: ${QDRANT_URL:-http://qdrant:6333}
+      # QDRANT_URL: leave empty when not using --profile qdrant.
+      # The qdrant container's URL is only valid when that profile is active.
+      QDRANT_URL: ${QDRANT_URL:-}
       QDRANT_API_KEY: ${QDRANT_API_KEY:-}
       QDRANT_PREFER_GRPC: ${QDRANT_PREFER_GRPC:-false}
       # --- Optional: LangSmith tracing ---

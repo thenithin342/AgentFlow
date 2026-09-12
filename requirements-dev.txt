@@ -22,6 +22,7 @@ httpx>=0.27
 asgi-lifespan>=2.1
 
 # Linting, typing, and coverage
+langsmith>=0.1.0               # LangSmith tracing client (used by test_eval.py + observability)
 ruff>=0.4.0
 mypy>=1.10.0
 pytest-cov>=5.0.0

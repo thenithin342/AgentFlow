@@ -52,3 +52,9 @@ class AgentState(TypedDict):
     # Structured blog post produced by the blog_writer_node.
     # Schema: {title, meta_description, tags, sections: [{heading, content}]}
     blog_output: NotRequired[dict[str, Any] | None]
+
+    # --- Router diagnostics ---
+    # True when the router LLM failed and the route was defaulted to 'chat'.
+    # Downstream nodes (synthesizer, chat_agent) can surface a degraded-mode
+    # notice to the user without blocking the response.
+    router_fallback: NotRequired[bool]

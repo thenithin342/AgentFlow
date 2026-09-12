@@ -126,16 +126,27 @@ def calculator(expression: str) -> str:
 
 
 def make_retrieve_documents_tool(thread_id: str):
-    from backend.rag.ingest import _index_dir, get_retriever
+    from backend.rag.ingest import _index_dir, _use_qdrant, get_retriever
 
     @tool
     def retrieve_documents(query: str) -> str:
         """Retrieve relevant chunks from this thread's uploaded documents."""
-        if not os.path.isdir(_index_dir(thread_id)):
-            return "Error: No documents uploaded for this conversation. STOP searching and inform the user that they must upload a document first."
+        # On the FAISS path the index directory must exist locally.
+        # On the Qdrant path the index is remote — skip the local dir check
+        # entirely (the directory will never exist there).
+        if not _use_qdrant() and not os.path.isdir(_index_dir(thread_id)):
+            return (
+                "Error: No documents uploaded for this conversation. "
+                "STOP searching and inform the user that they must upload a document first."
+            )
 
         try:
             retriever = get_retriever(thread_id)
+            if retriever is None:
+                return (
+                    "Error: No documents uploaded for this conversation. "
+                    "STOP searching and inform the user that they must upload a document first."
+                )
             docs = retriever.invoke(query)
         except Exception as exc:  # noqa: BLE001
             return f"Error: retrieval failed ({type(exc).__name__}: {exc})"
@@ -258,7 +269,7 @@ def url_reader(url: str) -> str:
                 if getattr(self, "_tunnel_host", None):
                     self._tunnel()
 
-        class SafeHTTPSConnection(http.client.HTTPSConnection):
+        class SafeHTTPSConnection(SafeHTTPConnection, http.client.HTTPSConnection):
             def connect(self):
                 ip = self._resolve_and_validate()
                 self.sock = socket.create_connection((ip, self.port), self.timeout, self.source_address)
@@ -343,6 +354,20 @@ import io
 import multiprocessing
 
 
+class _SafeModule:
+    """Proxy that exposes only callable members of a stdlib module,
+    blocking __globals__, __dict__, and all other dunder attributes
+    to prevent globals-escape RCE."""
+    __slots__ = ("_mod",)
+    def __init__(self, mod): object.__setattr__(self, "_mod", mod)
+    def __getattr__(self, name):
+        if name.startswith("__"):
+            raise AttributeError(f"attribute {name!r} is blocked")
+        return getattr(object.__getattribute__(self, "_mod"), name)
+    def __setattr__(self, name, value):
+        raise AttributeError("read-only")
+
+
 def _code_worker(code_str: str, result_q: multiprocessing.Queue) -> None:
     """Runs inside a child process — killed on timeout."""
     try:
@@ -351,8 +376,8 @@ def _code_worker(code_str: str, result_q: multiprocessing.Queue) -> None:
         import statistics
         safe_globals = {
             "__builtins__": {k: getattr(builtins, k) for k in _SAFE_BUILTINS},
-            "math": math,
-            "statistics": statistics,
+            "math": _SafeModule(math),
+            "statistics": _SafeModule(statistics),
         }
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
