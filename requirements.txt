@@ -15,7 +15,7 @@ langchain-tavily>=0.1.0
 
 # RAG — use fastembed (ONNX-based, ~80MB) instead of sentence-transformers
 # (which pulls PyTorch ~300MB and OOMs on Render/free-tier 512MB instances).
-faiss-cpu>=1.8.0
+faiss-cpu>=1.15.0
 fastembed>=0.3.0
 pypdf>=4.1.0
 langchain-text-splitters>=0.3.0  # RecursiveCharacterTextSplitter in rag/ingest.py
