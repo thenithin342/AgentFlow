@@ -29,8 +29,11 @@ jobs:
       # -m "not eval" excludes test_eval.py which spawns a background LangSmith
       # thread that lingers after the suite finishes, causing spurious 401 retry
       # noise and wall-clock slowdown when LANGCHAIN_API_KEY is absent in CI.
+      # Coverage floor: actual total was ~51% (2026-09-12), floor set to 46
+      # (actual minus 5) so the gate doesn't immediately fail; raise toward
+      # 60%+ over time as tests improve.
       run: |
-        pytest -v -m "not eval" --cov=backend --cov-report=xml --cov-report=term-missing
+        pytest -v -m "not eval" --cov=backend --cov-report=xml --cov-report=term-missing --cov-fail-under=46
       env:
         GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
         PYTHONPATH: .
@@ -54,6 +57,8 @@ jobs:
         cache-dependency-path: frontend/package-lock.json
     - name: Install dependencies
       run: npm ci
+    - name: Lint (eslint)
+      run: npm run lint
     - name: Unit tests (vitest)
       run: npx vitest run --reporter=verbose
     - name: Production build

@@ -232,11 +232,10 @@ def blog_writer_node_sync(state: AgentState, config: RunnableConfig) -> dict:
     import asyncio
     import concurrent.futures
     try:
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                future = pool.submit(asyncio.run, blog_writer_node(state, config))
-                return future.result()
-        return loop.run_until_complete(blog_writer_node(state, config))
+        asyncio.get_running_loop()
+        # A loop is already running (e.g. pytest-asyncio) — offload to thread.
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            return pool.submit(asyncio.run, blog_writer_node(state, config)).result()
     except RuntimeError:
+        # No running loop — safe to use asyncio.run directly.
         return asyncio.run(blog_writer_node(state, config))

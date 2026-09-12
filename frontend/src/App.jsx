@@ -1,9 +1,7 @@
-import { useState, useRef, useEffect, useMemo, useCallback, memo } from "react";
+import { useState, useRef, useEffect, useMemo, useCallback } from "react";
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeSanitize from 'rehype-sanitize';
-import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
-import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
 
 /*
  * AgentFlow chat interface.
@@ -21,30 +19,17 @@ import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
  * different host.
  */
 
-import { MAX_MESSAGE_CHARS, MAX_UPLOAD_BYTES, TRACE_STREAM_NODES, SSE_TOKEN_NODES } from "./constants";
-import { parseSSEPayload } from "./sseParser";
+import { MAX_UPLOAD_BYTES, AGENT_COLORS } from "./constants";
 import { getToken, clearToken, isExpired, getUsername } from "./auth";
-import { apiFetch, apiUrl } from "./api/client";
-import { streamAgentMeta, agentLabelFromRoute, formatLastSeen, uuid, parseCitations, now } from "./utils";
+import { apiFetch } from "./api/client";
+import { agentLabelFromRoute, uuid, parseCitations, now } from "./utils";
 import LoginScreen from "./LoginScreen.jsx";
 import useSSE from "./hooks/useSSE";
 import MessageBubble from "./components/Chat/MessageBubble";
+import ErrorBoundary from "./ErrorBoundary.jsx";
 import ChatInput from "./components/Chat/ChatInput";
 import Sidebar from "./components/Sidebar/Sidebar";
 import AdminPage from "./pages/AdminPage";
-
-const AGENT_COLORS = {
-  router: "var(--af-router)",
-  research_agent: "var(--af-research)",
-  analysis_agent: "var(--af-analysis)",
-  chat_agent: "var(--af-chat)",
-  synthesizer: "var(--af-synthesizer)",
-  human_review: "var(--af-review)",
-  blog_writer: "var(--af-blog)",
-  memory_reader: "var(--af-memory)",
-  memory_writer: "var(--af-memory)",
-  stm_compressor: "var(--af-memory)",
-};
 
 const TRACE_RAIL_STYLE = {
   width: 176,
@@ -53,27 +38,6 @@ const TRACE_RAIL_STYLE = {
   borderRight: "1px solid var(--af-border)",
   padding: "14px 12px",
   overflowY: "auto",
-};
-
-const INPUT_STYLE_BASE = {
-  flex: 1,
-  background: "var(--af-bg-panel)",
-  border: "1px solid var(--af-border)",
-  borderRadius: 6,
-  padding: "8px 12px",
-  color: "var(--af-text-primary)",
-  fontFamily: "var(--af-font-sans)",
-  fontSize: 13,
-  outline: "none",
-};
-
-const SEND_BUTTON_BASE_STYLE = {
-  background: "transparent",
-  border: "none",
-  color: "var(--af-synthesizer)",
-  fontSize: 18,
-  lineHeight: 1,
-  padding: 6,
 };
 
 function TraceRail({ trace }) {
@@ -135,54 +99,6 @@ function TraceRail({ trace }) {
   );
 }
 
-function AgentAvatar({ agent }) {
-  const icon = agent === "router" ? "🚦" :
-               agent === "research_agent" ? "🔍" :
-               agent === "analysis_agent" ? "📊" :
-               agent === "chat_agent" ? "💬" :
-               agent === "synthesizer" ? "✍️" :
-               agent === "human_review" ? "🛑" : "🤖";
-  const bg = AGENT_COLORS[agent] || "var(--af-router)";
-  return (
-    <div style={{
-      width: 20, height: 20, borderRadius: "50%", background: bg, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, color: "var(--af-bg-panel)", flexShrink: 0
-    }}>
-      {icon}
-    </div>
-  );
-}
-
-function CopyButton({ text, style }) {
-  const [copied, setCopied] = useState(false);
-  return (
-    <button
-      onClick={async () => {
-        try {
-          await navigator.clipboard.writeText(text);
-          setCopied(true);
-          setTimeout(() => setCopied(false), 2000);
-        } catch {
-          setCopied(false);
-        }
-      }}
-      title="Copy"
-      style={{
-        background: "transparent",
-        border: "none",
-        color: copied ? "var(--af-research)" : "var(--af-text-muted)",
-        cursor: "pointer",
-        padding: "2px 4px",
-        fontFamily: "var(--af-font-sans)",
-        fontSize: 12,
-        ...style
-      }}
-    >
-      {copied ? "✓ Copied" : "📋"}
-    </button>
-  );
-}
-
-const COLLAPSE_THRESHOLD = 1500; // chars
 export default function App() {
   // Auth gate. The /auth/login endpoint is on the backend's
   // PUBLIC_PATHS allowlist, so it works without a token — everything
@@ -252,14 +168,59 @@ export default function App() {
   return <ChatApp currentUser={currentUser} onLogout={handleLogout} />;
 }
 
+function WelcomePanel({ onSelect }) {
+  const chips = [
+    { label: "🔍 Research", text: "Research the latest developments in quantum computing" },
+    { label: "📊 Analyze", text: "Analyze the data in the uploaded document and summarize key findings" },
+    { label: "📝 Blog", text: "Write a blog post about the future of AI agents" },
+    { label: "💬 Chat", text: "Explain how LangGraph works in simple terms" },
+  ];
+  return (
+    <div style={{
+      display: "flex", flexDirection: "column", alignItems: "center",
+      justifyContent: "center", flex: 1, gap: 20, padding: 32,
+    }}>
+      <div style={{ fontSize: 28, fontWeight: 700, color: "var(--af-text-primary)", fontFamily: "var(--af-font-sans)" }}>
+        AgentFlow
+      </div>
+      <div style={{ color: "var(--af-text-muted)", fontSize: 13, textAlign: "center", maxWidth: 380 }}>
+        A multi-agent AI assistant with research, analysis, blog writing, and review modes.
+      </div>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 10, justifyContent: "center", maxWidth: 480 }}>
+        {chips.map((c) => (
+          <button
+            key={c.label}
+            onClick={() => onSelect(c.text)}
+            style={{
+              background: "var(--af-bg-panel)", border: "1px solid var(--af-border)",
+              borderRadius: 8, padding: "10px 16px", color: "var(--af-text-primary)",
+              fontFamily: "var(--af-font-sans)", fontSize: 13, cursor: "pointer",
+              transition: "border-color 0.15s",
+            }}
+            onMouseEnter={e => e.currentTarget.style.borderColor = "var(--af-synthesizer)"}
+            onMouseLeave={e => e.currentTarget.style.borderColor = "var(--af-border)"}
+          >
+            {c.label}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function ChatApp({ currentUser, onLogout }) {
   const [threadId, setThreadId] = useState(() => uuid());
 
 
-    const [theme, setTheme] = useState("dark");
+    const [theme, setTheme] = useState(() => {
+      const saved = localStorage.getItem("af-theme");
+      if (saved === "light" || saved === "dark") return saved;
+      return window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+    });
   // Phase 9: blog output and active main tab
   const [blogOutput, setBlogOutput] = useState(null);
   const [activeTab, setActiveTab] = useState("chat"); // "chat" | "blog"
+  const [blogReadyToast, setBlogReadyToast] = useState(false);
   // Phase 9: persistent sidebar (replaces old floating history panel)
   const [sidebarOpen, setSidebarOpen] = useState(true);
 
@@ -287,21 +248,21 @@ function ChatApp({ currentUser, onLogout }) {
     setIsStreaming,
     sendMessage,
     resetStreamState,
-    abortRef
+    abortRef,
+    stallHint,
+    routerFallback,
+    clearRouterFallback
   } = useSSE({
     threadId,
     showError,
     reviewRequired,
-    setReviewRequired,
     setEditingReview,
-    activeTab
   });
 
   const [showScrollChip, setShowScrollChip] = useState(false);
   const [unreadCount, setUnreadCount] = useState(0);
   const [showShortcuts, setShowShortcuts] = useState(false);
   const scrollRef = useRef(null);
-  const fileInputRef = useRef(null);
   const inputRef = useRef(null);
         const shortcutsButtonRef = useRef(null);
   const shortcutsPopoverRef = useRef(null);
@@ -346,7 +307,7 @@ function ChatApp({ currentUser, onLogout }) {
   }
 
   const messagesWithCitations = useMemo(() => {
-    return messages.map((msg, i) => {
+    return messages.map((msg) => {
       if (msg.role !== "agent" || msg.error || msg.streaming) return msg;
       // Parse citations for synthesizer (final polished answer with Sources block)
       // and research_agent (raw output may include inline [1] url references).
@@ -356,7 +317,7 @@ function ChatApp({ currentUser, onLogout }) {
     });
   }, [messages]);
 
-  useEffect(() => () => { abortRef.current?.abort(); }, []);
+  useEffect(() => () => { abortRef.current?.abort(); }, [abortRef]);
 
   // Ref that always reflects the latest isStreaming value inside the
   // keydown event listener (which captures a stale closure over the
@@ -379,6 +340,7 @@ function ChatApp({ currentUser, onLogout }) {
     setStatusError(null);
     setBlogOutput(null);
     setActiveTab("chat");
+    setBlogReadyToast(false);
   }, [resetStreamState]);
 
   // Esc key handling also closes the shortcuts popover. The popover's
@@ -412,26 +374,9 @@ function ChatApp({ currentUser, onLogout }) {
           ...t.map((x) => (x.active ? { ...x, active: false } : x)),
           { node: "router", label: "aborted", time: now() },
         ]);
-      } else if (e.key === "Escape" && !isStreamingRef.current) {
-        setMessages((m) => {
-          if (m.length === 0) return m;
-          const next = [...m];
-          const last = next[next.length - 1];
-          if (last.role === "review") {
-            next[next.length - 1] = {
-              ...last,
-              role: "agent",
-              aborted: true,
-              meta: "aborted",
-            };
-            setTrace((t) => [
-              ...t.map((x) => (x.active ? { ...x, active: false } : x)),
-              { node: "human_review", label: "aborted", time: now() },
-            ]);
-            setEditingReview(false);
-          }
-          return next;
-        });
+      } else if (e.key === "Escape") {
+        // Only close the edit panel — do not abort the review.
+        setEditingReview(false);
       }
       const tag = document.activeElement?.tagName;
       if (e.key === "/" && tag !== "INPUT" && tag !== "TEXTAREA") {
@@ -451,7 +396,7 @@ function ChatApp({ currentUser, onLogout }) {
     }
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [resetThread, showShortcuts]);
+  }, [resetThread, showShortcuts, abortRef, setMessages, setIsStreaming, setTrace]);
 
   // Outside-click closes the shortcuts popover. Listener is bound only
   // while the popover is open; the popover ref + button ref let us
@@ -605,6 +550,35 @@ function ChatApp({ currentUser, onLogout }) {
     }
   }
 
+  function handleReject(msgId) {
+    // Explicit discard: do NOT call the /review endpoint — the graph stays
+    // paused and the user can start a new thread or let it time out naturally.
+    setMessages((m) => {
+      const next = [...m];
+      let idx = msgId ? next.findIndex((x) => x.id === msgId) : -1;
+      if (idx === -1) {
+        for (let i = next.length - 1; i >= 0; i--) {
+          if (next[i].role === "review") { idx = i; break; }
+        }
+      }
+      if (idx !== -1) {
+        next[idx] = {
+          ...next[idx],
+          role: "agent",
+          agent: "human_review",
+          meta: "review discarded",
+        };
+      }
+      return next;
+    });
+    setTrace((t) => [
+      ...t.map((e) => (e.active ? { ...e, active: false } : e)),
+      { node: "human_review", label: "discarded", time: now() },
+    ]);
+    setEditingReview(false);
+    setEditText("");
+  }
+
   async function handleFileChange(e) {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -628,7 +602,7 @@ function ChatApp({ currentUser, onLogout }) {
       const res = await apiFetch("/upload", { method: "POST", body: fd });
       if (res.ok) {
         let stats = null;
-        try { stats = await res.json(); } catch (_) {}
+        try { stats = await res.json(); } catch { /* non-JSON response — use defaults */ }
         const chunks = stats?.chunks ?? "?";
         const pages  = stats?.pages  ?? "?";
         const label  = `📄 **${file.name}** indexed — ${pages} page(s), ${chunks} chunk(s). You can now ask questions about it.`;
@@ -639,7 +613,7 @@ function ChatApp({ currentUser, onLogout }) {
         setTrace((t) => [...t, { node: "router", label: "PDF indexed", time: now() }]);
       } else {
         let detail = "";
-        try { const body = await res.json(); detail = body?.detail || ""; } catch (_) {}
+        try { const body = await res.json(); detail = body?.detail || ""; } catch { /* non-JSON error body — use status only */ }
         showError(`Upload failed (${res.status})${detail ? ": " + detail : ""}`);
       }
     } catch (err) {
@@ -706,7 +680,8 @@ function ChatApp({ currentUser, onLogout }) {
           .then(data => {
             if (data?.blog_output) {
               setBlogOutput(data.blog_output);
-              setActiveTab("blog");
+              setBlogReadyToast(true);
+              setTimeout(() => setBlogReadyToast(false), 8000); // auto-dismiss after 8s
             }
           })
           .catch(() => {});
@@ -849,22 +824,9 @@ function ChatApp({ currentUser, onLogout }) {
     fetchThreadList();
   };
 
-  const inputStyle = {
-    ...INPUT_STYLE_BASE,
-    resize: "none",
-    overflow: "hidden",
-    lineHeight: 1.4,
-    maxHeight: 140,
-    minHeight: 32,
-    padding: "6px 12px",
-    cursor: isStreaming ? "not-allowed" : "auto",
-    opacity: 1,  // readOnly doesn't visually dim; aria-busy carries the state
-  };
-
   // Auto-grow: keep textarea sized to its content up to 6 rows. ResizeObserver
   // would be cleaner but adds a ref dance; this approach uses scrollHeight
-  // which is supported everywhere. The `minHeight: 32` on inputStyle
-  // prevents zero-height flicker on mount.
+  // which is supported everywhere.
   function autoGrow(el) {
     if (!el) return;
     if (autoGrowRafRef.current) cancelAnimationFrame(autoGrowRafRef.current);
@@ -874,8 +836,6 @@ function ChatApp({ currentUser, onLogout }) {
       el.style.height = Math.min(el.scrollHeight, 140) + "px";
     });
   }
-
-  const sendDisabled = isStreaming || !input.trim();
 
   return (
     <>
@@ -901,6 +861,28 @@ function ChatApp({ currentUser, onLogout }) {
           animation: "af-slide-in 0.2s ease-out"
         }}>
           ⚠️ {statusError}
+        </div>
+      )}
+      {blogReadyToast && (
+        <div style={{
+          position: "fixed", bottom: 24, right: 24, zIndex: 1000,
+          background: "var(--af-bg-panel)", border: "1px solid var(--af-border)",
+          borderRadius: 8, padding: "12px 16px", boxShadow: "0 4px 16px rgba(0,0,0,0.3)",
+          display: "flex", gap: 12, alignItems: "center", fontSize: 13,
+          color: "var(--af-text-primary)",
+        }}>
+          <span>📝 Blog post ready</span>
+          <button
+            onClick={() => { setActiveTab("blog"); setBlogReadyToast(false); }}
+            style={{
+              background: "var(--af-synthesizer)", border: "none", borderRadius: 5,
+              color: "#fff", padding: "4px 10px", cursor: "pointer", fontSize: 12,
+            }}
+          >View</button>
+          <button
+            onClick={() => setBlogReadyToast(false)}
+            style={{ background: "none", border: "none", color: "var(--af-text-muted)", cursor: "pointer" }}
+          >×</button>
         </div>
       )}
       <div
@@ -1027,7 +1009,11 @@ function ChatApp({ currentUser, onLogout }) {
             Export
           </button>
           <button
-            onClick={() => setTheme(t => t === "dark" ? "light" : "dark")}
+            onClick={() => setTheme(t => {
+              const next = t === "dark" ? "light" : "dark";
+              localStorage.setItem("af-theme", next);
+              return next;
+            })}
             style={{
               background: "transparent",
               border: "1px solid var(--af-border)",
@@ -1245,92 +1231,40 @@ function ChatApp({ currentUser, onLogout }) {
             style={{ flex: 1, overflowY: "auto", padding: 16, display: "flex", flexDirection: "column", gap: 14 }}
           >
             {messagesWithCitations.length === 0 ? (
-              <div
-                style={{
-                  flex: 1,
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  padding: "0 20px"
-                }}
-              >
-                <div style={{ textAlign: "center", maxWidth: 500, width: "100%" }}>
-                  <div
-                    style={{
-                      fontFamily: "var(--af-font-mono)",
-                      fontSize: 12,
-                      color: "var(--af-text-muted)",
-                      letterSpacing: "0.08em",
-                      marginBottom: 18,
-                    }}
-                  >
-                    AGENTFLOW
-                  </div>
-                  <div
-                    style={{
-                      fontFamily: "var(--af-font-sans)",
-                      fontSize: 14,
-                      color: "var(--af-text-body)",
-                      marginBottom: 24,
-                    }}
-                  >
-                    Ask anything. The router decides which agent answers.
-                  </div>
-                  <div
-                    style={{
-                      display: "flex",
-                      flexDirection: "column",
-                      gap: 8,
-                      alignItems: "center",
-                    }}
-                  >
-                    {[
-                      "What are the latest AI research papers?",
-                      "Summarize the uploaded PDF",
-                      "Write a blog post about the future of AI",
-                      "Calculate compound interest on $5000 at 4% for 10 years",
-                    ].map((prompt) => (
-                      <button
-                        key={prompt}
-                        type="button"
-                        className="af-welcome-chip"
-                        onClick={() => sendMessage(prompt)}
-                        style={{ width: "100%", display: "flex", justifyContent: "space-between", alignItems: "center" }}
-                      >
-                        <span>{prompt}</span>
-                        <span style={{ opacity: 0.5 }}>→</span>
-                      </button>
-                    ))}
-                  </div>
-                  <div style={{ marginTop: 32, fontSize: 13, color: "var(--af-text-muted)", textAlign: "left", background: "var(--af-bg-surface)", padding: 16, borderRadius: 8, lineHeight: 1.5 }}>
-                    <strong>💡 Tips:</strong>
-                    <ul style={{ paddingLeft: 20, marginTop: 8, marginBottom: 0 }}>
-                      <li>Use the <strong>clip icon</strong> to upload a PDF. Ask questions about it and the Analysis agent will answer.</li>
-                      <li>AgentFlow has a <strong>Review Mode</strong> for risky actions (like tools that modify data), requiring your approval before proceeding.</li>
-                      <li>Hit <strong>Esc</strong> to stop generating at any time.</li>
-                    </ul>
-                  </div>
-                </div>
-              </div>
+              <WelcomePanel onSelect={(text) => { setInput(text); inputRef.current?.focus(); }} />
             ) : null}
             {messagesWithCitations.map((msg, i) => (
-              <MessageBubble
-                key={msg.id ?? i}
-                msg={msg}
-                onApprove={handleApprove}
-                onEditResend={handleEditResend}
-                onSubmitEdit={handleSubmitEdit}
-                editingReview={editingReview}
-                editText={editText}
-                setEditText={setEditText}
-                onRetry={handleRetry}
-                onInlineEdit={(text) => {
-                  setInput(text);
-                  inputRef.current?.focus();
-                  autoGrow(inputRef.current);
-                }}
-              />
+              <ErrorBoundary key={msg.id ?? i} fallback={
+                <div style={{padding: "8px 12px", color: "var(--af-error)", fontSize: 12}}>
+                  ⚠️ Could not render this message.
+                </div>
+              }>
+                <MessageBubble
+                  msg={msg}
+                  onApprove={handleApprove}
+                  onEditResend={handleEditResend}
+                  onSubmitEdit={handleSubmitEdit}
+                  onReject={handleReject}
+                  editingReview={editingReview}
+                  editText={editText}
+                  setEditText={setEditText}
+                  onRetry={handleRetry}
+                  onInlineEdit={(text) => {
+                    setInput(text);
+                    inputRef.current?.focus();
+                    autoGrow(inputRef.current);
+                  }}
+                />
+              </ErrorBoundary>
             ))}
+            {isStreaming && stallHint && (
+              <div style={{
+                padding: "4px 14px", fontSize: 11,
+                color: "var(--af-text-muted)", fontStyle: "italic",
+              }}>
+                {stallHint}
+              </div>
+            )}
             {isStreaming && messagesWithCitations.length > 0 && messagesWithCitations[messagesWithCitations.length - 1].role === "user" && (
               <div style={{ maxWidth: "84%", borderLeft: `2px solid var(--af-router)`, padding: "6px 0 6px 12px", opacity: 0.7, marginTop: 16 }}>
                 <div style={{ fontFamily: "var(--af-font-mono)", fontSize: 10.5, color: "var(--af-router)", marginBottom: 5 }}>
@@ -1339,6 +1273,20 @@ function ChatApp({ currentUser, onLogout }) {
                 <div className="af-pulse" style={{ color: "var(--af-text-body)", fontSize: 13.5, fontStyle: "italic" }}>
                   Thinking...
                 </div>
+              </div>
+            )}
+            {!isStreaming && routerFallback && (
+              <div style={{
+                margin: "0 14px 8px", padding: "8px 12px",
+                background: "rgba(227,179,86,0.1)", border: "1px solid var(--af-review-border)",
+                borderRadius: 6, fontSize: 12, color: "var(--af-review)",
+                display: "flex", justifyContent: "space-between", alignItems: "center",
+              }}>
+                <span>⚠️ Search tools were unavailable — answered from general knowledge only.</span>
+                <button onClick={() => clearRouterFallback()} style={{
+                  background: "none", border: "none", color: "inherit",
+                  cursor: "pointer", padding: "0 4px", fontSize: 14,
+                }}>×</button>
               </div>
             )}
           </div>

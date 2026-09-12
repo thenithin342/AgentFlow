@@ -50,3 +50,7 @@ dev = [
 
 [tool.setuptools.packages.find]
 include = ["backend*"]
+
+[tool.coverage.report]
+fail_under = 46
+show_missing = true

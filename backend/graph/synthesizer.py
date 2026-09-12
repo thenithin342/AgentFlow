@@ -15,6 +15,7 @@ from langchain_core.runnables import RunnableConfig
 from backend.graph.messages import content_to_str
 from backend.graph.security import escape_untrusted
 from backend.graph.state import AgentState
+from backend.token_utils import truncate_messages_if_needed
 
 # --- System prompt -----------------------------------------------------------
 
@@ -152,11 +153,14 @@ def synthesizer_node(state: AgentState, config: RunnableConfig) -> dict:
     system_prompt = SYNTHESIZER_SYSTEM_PROMPT
 
     from backend.llm import llm_smart
-    response = llm_smart.invoke(
+    safe_messages = truncate_messages_if_needed(
         [
             SystemMessage(content=system_prompt),
             HumanMessage(content=_build_user_payload(state)),
-        ],
+        ]
+    )
+    response = llm_smart.invoke(
+        safe_messages,
         config=config,
     )
 

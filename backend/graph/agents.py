@@ -47,6 +47,7 @@ from backend.graph.tools import (
     url_reader,
     wikipedia_search,
 )
+from backend.token_utils import truncate_messages_if_needed
 
 # --- Thread ID helper ------------------------------------------------------
 
@@ -297,7 +298,8 @@ def research_agent_node(state: AgentState, config: RunnableConfig) -> dict:
         prompt=RESEARCH_AGENT_PROMPT,
         thread_id=thread_id,
     )
-    result = agent.invoke({"messages": state["messages"]}, config=config)
+    safe_messages = truncate_messages_if_needed(state["messages"])
+    result = agent.invoke({"messages": safe_messages}, config=config)
     messages = result["messages"]
     return {
         "agent_output": _output_from_messages(messages),
@@ -324,7 +326,8 @@ def analysis_agent_node(state: AgentState, config: RunnableConfig) -> dict:
         prompt=ANALYSIS_AGENT_PROMPT,
         thread_id=thread_id,
     )
-    result = agent.invoke({"messages": state["messages"]}, config=config)
+    safe_messages = truncate_messages_if_needed(state["messages"])
+    result = agent.invoke({"messages": safe_messages}, config=config)
     messages = result["messages"]
     return {
         "agent_output": _output_from_messages(messages),
@@ -352,7 +355,8 @@ def chat_agent_node(state: AgentState, config: RunnableConfig) -> dict:
     rag_tool = make_retrieve_documents_tool(thread_id)
     from backend.llm import llm_fast
     agent = _get_cached_agent([rag_tool], llm_fast, prompt=CHAT_AGENT_PROMPT, thread_id=thread_id)
-    result = agent.invoke({"messages": state["messages"]}, config=config)
+    safe_messages = truncate_messages_if_needed(state["messages"])
+    result = agent.invoke({"messages": safe_messages}, config=config)
     text = _output_from_messages(result["messages"])
 
     return {"agent_output": text, "final_response": text}

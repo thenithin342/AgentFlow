@@ -167,6 +167,7 @@ async def chat(
         },
     )
 
+@limiter.limit(f"{settings.rate_limit_per_minute}/minute")
 @router.post("/review/{thread_id}")
 async def review(
     thread_id: str,

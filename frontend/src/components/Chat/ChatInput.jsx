@@ -68,7 +68,7 @@ export default function ChatInput({
           opacity: (isStreaming || isUploading) ? 0.5 : 1,
         }}
       >
-        {isUploading ? "⏳" : "📎"}
+        <span aria-hidden="true">{isUploading ? "⏳" : "📎"}</span>
       </button>
       <button
         onClick={() => setReviewRequired((r) => !r)}

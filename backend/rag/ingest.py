@@ -206,7 +206,15 @@ def ingest_pdf(
         raise ValueError("PDF contains no extractable text")
 
     if _use_qdrant():
-        _ingest_qdrant(thread_id, chunks)
+        try:
+            _ingest_qdrant(thread_id, chunks)
+        except Exception:
+            logger.warning(
+                "[RAG] Qdrant ingest failed for thread %s — falling back to FAISS.",
+                thread_id[:16],
+                exc_info=True,
+            )
+            _ingest_faiss(thread_id, chunks)
     else:
         _ingest_faiss(thread_id, chunks)
 

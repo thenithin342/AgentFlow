@@ -33,6 +33,7 @@ import json
 import logging
 import re
 import secrets
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -280,12 +281,22 @@ def ensure_admin(settings: Settings) -> None:
     _sync_upsert_user(db_path, rec)
 
     if not settings.admin_password:
-        logger.warning(
-            "[AgentFlow] created bootstrap admin user '%s' with random password: %s "
-            "(set ADMIN_PASSWORD env to pin this)",
-            settings.admin_username,
-            pwd,
-        )
+        if sys.stderr.isatty():
+            print(
+                f"\n[AgentFlow] Bootstrap admin '{settings.admin_username}' created.\n"
+                f"  One-time password: {pwd}\n"
+                f"  Set ADMIN_PASSWORD env var to pin this before deploying.\n",
+                file=sys.stderr,
+            )
+        else:
+            # NOTE: this module uses stdlib logging (not structlog), which
+            # rejects structlog-style kwargs (username=...) with TypeError.
+            # Fold the username into the %-format string instead. The
+            # password itself is NEVER written to the logger.
+            logger.warning(
+                "admin_bootstrap_no_password_set_use_ADMIN_PASSWORD_env username=%s",
+                settings.admin_username,
+            )
 
 
 # ---------------------------------------------------------------------------

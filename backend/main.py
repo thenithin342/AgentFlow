@@ -49,6 +49,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from prometheus_fastapi_instrumentator import Instrumentator
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from backend.logging_config import configure_logging, get_logger
 from backend.settings import get_settings
@@ -136,7 +137,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             # The sync graph (build_compiled_graph / tests / CLI) uses
             # blog_writer_node_sync from build_graph.py.
             from backend.graph.blog_agent import blog_writer_node as _async_blog
-            builder.nodes["blog_writer"].runnable = _async_blog
+            builder.nodes["blog_writer"] = builder.nodes["blog_writer"]._replace(
+                runnable=_async_blog
+            )
 
             app.state.graph = builder.compile(checkpointer=checkpointer)
             app.state.graph.name = "AgentFlow"
@@ -180,7 +183,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
                 # Swap blog_writer to async node for the FastAPI server.
                 from backend.graph.blog_agent import blog_writer_node as _async_blog
-                builder.nodes["blog_writer"].runnable = _async_blog
+                builder.nodes["blog_writer"] = builder.nodes["blog_writer"]._replace(
+                    runnable=_async_blog
+                )
 
                 app.state.graph = builder.compile(checkpointer=checkpointer)
                 app.state.graph.name = "AgentFlow"
@@ -216,6 +221,11 @@ app.add_middleware(
     allow_credentials=False,
     allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
     allow_headers=["Content-Type", "Authorization", "X-API-Key", "X-Request-ID"],
+)
+
+app.add_middleware(
+    TrustedHostMiddleware,
+    allowed_hosts=["*"]  # tighten to your domain in production
 )
 
 # Prometheus metrics — instrument AFTER CORS so middleware wraps correctly.

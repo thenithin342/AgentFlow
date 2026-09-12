@@ -4,10 +4,14 @@ import { parseSSEPayload } from "../sseParser";
 import { SSE_TOKEN_NODES } from "../constants";
 import { uuid, now, streamAgentMeta } from "../utils";
 
-export default function useSSE({ threadId, showError, reviewRequired, setReviewRequired, setEditingReview, activeTab }) {
+export default function useSSE({ threadId, showError, reviewRequired, setEditingReview }) {
   const [messages, setMessages] = useState([]);
   const [trace, setTrace] = useState([]);
   const [isStreaming, setIsStreaming] = useState(false);
+  const [stallHint, setStallHint] = useState(null);
+  const [routerFallback, setRouterFallback] = useState(false);
+
+  const clearRouterFallback = useCallback(() => setRouterFallback(false), []);
 
   const abortRef = useRef(null);
   const pendingDraftRef = useRef(null);
@@ -30,6 +34,8 @@ export default function useSSE({ threadId, showError, reviewRequired, setReviewR
     setMessages([]);
     setTrace([]);
     setIsStreaming(false);
+    setStallHint(null);
+    setRouterFallback(false);
   }, []);
 
   const sendMessage = useCallback(async (text) => {
@@ -46,6 +52,8 @@ export default function useSSE({ threadId, showError, reviewRequired, setReviewR
     setMessages((m) => [...m, { role: "user", text, id: uuid(), timestamp }]);
     setTrace((t) => [...t, { node: "router", label: "routing…", active: true, time: now() }]);
     setIsStreaming(true);
+    setStallHint(null);
+    setRouterFallback(false);
     
     synthStartMsRef.current = null;
     lastMetaUpdateMsRef.current = 0;
@@ -135,6 +143,23 @@ export default function useSSE({ threadId, showError, reviewRequired, setReviewR
     const handlePayload = (rawPayload) => {
       const parsed = parseSSEPayload(rawPayload);
 
+      // Defensive: backend may surface the router LLM failure as a
+      // node_update/graph payload containing {"router_fallback": true}
+      // (see backend/graph/router.py). Catch it regardless of event kind.
+      try {
+        if (typeof rawPayload === "string" && rawPayload.includes("router_fallback")) {
+          const maybe = JSON.parse(rawPayload.slice(rawPayload.indexOf("{")));
+          if (maybe && maybe.router_fallback === true) {
+            if (streamGenRef.current === myGen) setRouterFallback(true);
+          } else if (/["']?router_fallback["']?\s*[:=]\s*true/i.test(rawPayload)) {
+            if (streamGenRef.current === myGen) setRouterFallback(true);
+          }
+        }
+        if (parsed && parsed.value && typeof parsed.value === "object" && parsed.value.router_fallback === true) {
+          if (streamGenRef.current === myGen) setRouterFallback(true);
+        }
+      } catch { /* non-JSON payload — ignore */ }
+
       if (parsed.kind === "done") { sentinel = "[DONE]"; return true; }
       if (parsed.kind === "interrupt") { sentinel = "[INTERRUPT]"; return true; }
       if (parsed.kind === "error") { sentinel = "[ERROR]"; sentinelDetail = (parsed.value || "").replace(/^\[ERROR\]\s*/, ""); return true; }
@@ -142,6 +167,7 @@ export default function useSSE({ threadId, showError, reviewRequired, setReviewR
       if (parsed.kind === "final") { if (!draft) { draft = parsed.value; pendingDraftRef.current = draft; } return false; }
       if (parsed.kind === "fallback") {
         // Router LLM failed — add a subtle trace entry but don’t block the response.
+        if (streamGenRef.current === myGen) setRouterFallback(true);
         setTrace((t) => [...t, { node: "router", label: "degraded (chat fallback)", time: now() }]);
         return false;
       }
@@ -220,10 +246,16 @@ export default function useSSE({ threadId, showError, reviewRequired, setReviewR
     const STALL_MS = 60_000;
     const watchdog = setInterval(() => {
       if (streamGenRef.current !== myGen) { clearInterval(watchdog); return; }
-      if (Date.now() - lastTokenAtMsRef.current > STALL_MS) {
+      const elapsed = Date.now() - lastTokenAtMsRef.current;
+      if (elapsed > 15_000 && elapsed <= 30_000) {
+        if (streamGenRef.current === myGen) setStallHint("Still working…");
+      } else if (elapsed > 30_000 && elapsed <= 55_000) {
+        if (streamGenRef.current === myGen) setStallHint("Taking longer than usual — complex query…");
+      }
+      if (elapsed > STALL_MS) {
         sentinel = "[ERROR]";
         clearInterval(watchdog);
-        try { reader.cancel(); } catch {}
+        try { reader.cancel(); } catch { /* cancel may throw if already closed — ignore */ }
         if (streamGenRef.current !== myGen) return;
         setMessages((m) => {
           const next = [...m];
@@ -235,11 +267,12 @@ export default function useSSE({ threadId, showError, reviewRequired, setReviewR
         });
         setTrace((t) => [...t.map((e) => (e.active ? { ...e, active: false } : e)), { node: "synthesizer", label: "stalled", time: now() }]);
         setIsStreaming(false);
+        setStallHint(null);
       }
     }, 5_000);
 
     try {
-      while (true) {
+      while (!sentinel) {
         const { done, value } = await reader.read();
         if (done) break;
         lastTokenAtMsRef.current = Date.now();
@@ -272,11 +305,12 @@ export default function useSSE({ threadId, showError, reviewRequired, setReviewR
       }
     } catch (err) {
       if (err.name === "AbortError") {
-        if (streamGenRef.current === myGen) setIsStreaming(false);
+        if (streamGenRef.current === myGen) { setIsStreaming(false); setStallHint(null); }
         return;
       }
       if (streamGenRef.current !== myGen) return;
       setIsStreaming(false);
+      setStallHint(null);
       showError(err.message || "stream error");
       return;
     } finally {
@@ -285,6 +319,7 @@ export default function useSSE({ threadId, showError, reviewRequired, setReviewR
 
     if (streamGenRef.current !== myGen) return;
     setIsStreaming(false);
+    setStallHint(null);
     
     const finalElapsed = synthStartMsRef.current ? ((Date.now() - synthStartMsRef.current) / 1000).toFixed(1) + "s" : "0.0s";
     const shortAgent = streamAgentMeta(activeStreamAgentRef.current);
@@ -335,7 +370,7 @@ export default function useSSE({ threadId, showError, reviewRequired, setReviewR
         return t.map((e) => (e.active ? { ...e, active: false } : e));
       });
     }
-  }, [isStreaming, threadId, reviewRequired, activeTab, showError, setEditingReview]);
+  }, [isStreaming, threadId, reviewRequired, showError, setEditingReview]);
 
   return {
     messages,
@@ -346,6 +381,9 @@ export default function useSSE({ threadId, showError, reviewRequired, setReviewR
     setIsStreaming,
     sendMessage,
     resetStreamState,
-    abortRef
+    abortRef,
+    stallHint,
+    routerFallback,
+    clearRouterFallback
   };
 }

@@ -3,14 +3,29 @@ from __future__ import annotations
 import uuid as _uuid_mod
 from datetime import datetime, timedelta, timezone
 
-from fastapi import HTTPException
+from fastapi import HTTPException, Request
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 
 from backend.auth import CurrentUser, make_thread_id
 from backend.validation import validate_thread_id
 
-limiter = Limiter(key_func=get_remote_address)
+
+def get_rate_limit_key(request: Request) -> str:
+    """Use authenticated user ID as rate limit key when available.
+    Falls back to forwarded IP → real IP for unauthenticated requests."""
+    # Try to get user from request state (set by auth middleware)
+    user = getattr(request.state, "user", None)
+    if user and hasattr(user, "username"):
+        return f"user:{user.username}"
+    # Fall back to forwarded IP (handles proxy)
+    forwarded_for = request.headers.get("X-Forwarded-For")
+    if forwarded_for:
+        return forwarded_for.split(",")[0].strip()
+    return get_remote_address(request)
+
+
+limiter = Limiter(key_func=get_rate_limit_key)
 
 def config_for(user: CurrentUser, thread_id: str) -> dict:
     """Standard LangGraph RunnableConfig, scoped to the current user."""

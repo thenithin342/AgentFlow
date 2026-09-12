@@ -264,6 +264,13 @@ if _require_groq and not _collect_groq_keys():
 
 
 # ---------------------------------------------------------------------------
+# Lightweight token budget helpers (re-exported for convenience)
+# ---------------------------------------------------------------------------
+
+from backend.token_utils import estimate_tokens, truncate_messages_if_needed  # noqa: E402,F401
+
+
+# ---------------------------------------------------------------------------
 # Module-level lazy attributes (PEP 562)
 # ---------------------------------------------------------------------------
 

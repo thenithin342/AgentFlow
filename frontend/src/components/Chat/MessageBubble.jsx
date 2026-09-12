@@ -5,19 +5,7 @@ import rehypeSanitize from 'rehype-sanitize';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import SourceChips from './SourceChips';
-
-const AGENT_COLORS = {
-  router: "var(--af-router)",
-  research_agent: "var(--af-research)",
-  analysis_agent: "var(--af-analysis)",
-  chat_agent: "var(--af-chat)",
-  synthesizer: "var(--af-synthesizer)",
-  human_review: "var(--af-review)",
-  blog_writer: "var(--af-blog)",
-  memory_reader: "var(--af-memory)",
-  memory_writer: "var(--af-memory)",
-  stm_compressor: "var(--af-memory)",
-};
+import { AGENT_COLORS } from "../../constants";
 
 function AgentAvatar({ agent }) {
   const icon = agent === "router" ? "🚦" :
@@ -30,7 +18,7 @@ function AgentAvatar({ agent }) {
   return (
     <div style={{
       width: 20, height: 20, borderRadius: "50%", background: bg, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, color: "var(--af-bg-panel)", flexShrink: 0
-    }}>
+    }} aria-hidden="true">
       {icon}
     </div>
   );
@@ -61,14 +49,14 @@ function CopyButton({ text, style }) {
         ...style
       }}
     >
-      {copied ? "✓ Copied" : "📋"}
+      <span aria-hidden="true">{copied ? "✓ Copied" : "📋"}</span>
     </button>
   );
 }
 
 const COLLAPSE_THRESHOLD = 1500;
 
-const Message = memo(function Message({ msg, onApprove, onEditResend, onSubmitEdit, editingReview, editText, setEditText, onRetry, onInlineEdit }) {
+const Message = memo(function Message({ msg, onApprove, onEditResend, onSubmitEdit, onReject, editingReview, editText, setEditText, onRetry, onInlineEdit }) {
   const [collapsed, setCollapsed] = useState(
     msg.role === "agent" && !msg.streaming && (msg.text?.length ?? 0) > COLLAPSE_THRESHOLD
   );
@@ -252,6 +240,14 @@ const Message = memo(function Message({ msg, onApprove, onEditResend, onSubmitEd
           >
             Edit and resend
           </button>
+          <button
+            onClick={() => onReject(msg.id)}
+            style={{ background: "transparent", border: "1px solid var(--af-error)",
+                     borderRadius: 5, color: "var(--af-error)", padding: "5px 12px",
+                     cursor: "pointer", fontSize: 12 }}
+          >
+            Discard
+          </button>
         </div>
       </div>
     );
@@ -302,7 +298,7 @@ const Message = memo(function Message({ msg, onApprove, onEditResend, onSubmitEd
                     remarkPlugins={[remarkGfm]}
                     rehypePlugins={[rehypeSanitize]}
                     components={{
-                      code({ node, inline, className, children, ...props }) {
+                      code({ inline, className, children, ...props }) {
                         const match = /language-(\w+)/.exec(className || "");
                         const lang = match ? match[1] : null;
                         const codeText = String(children).replace(/\n$/, "");

@@ -22,3 +22,16 @@ export const SSE_TOKEN_NODES = new Set([
   "analysis_agent",
   "blog_writer",
 ]);
+
+export const AGENT_COLORS = {
+  router: "var(--af-router)",
+  research_agent: "var(--af-research)",
+  analysis_agent: "var(--af-analysis)",
+  chat_agent: "var(--af-chat)",
+  synthesizer: "var(--af-synthesizer)",
+  human_review: "var(--af-review)",
+  blog_writer: "var(--af-blog)",
+  memory_reader: "var(--af-memory)",
+  memory_writer: "var(--af-memory)",
+  stm_compressor: "var(--af-memory)",
+};
