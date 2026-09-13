@@ -267,6 +267,21 @@ Friendly peer, not a corporate chatbot. Direct, helpful, human.
 
 
 
+def _build_prompt_with_ltm(base_prompt: str, state: AgentState) -> str:
+    """Append the LTM context block to a base prompt when memories exist.
+
+    `memory_reader_node` writes ``state["ltm_context"]`` before any agent
+    runs. This helper splices those facts into the final system prompt so
+    every agent — chat, research, and analysis — can personalise its
+    response with cross-thread user memories.
+    """
+    ltm = (state.get("ltm_context") or "").strip()
+    if not ltm:
+        return base_prompt
+    return f"{base_prompt}\n\n{ltm}"
+
+
+
 def _output_from_messages(messages) -> str:
     last = messages[-1]
     if is_ai_message(last):
@@ -292,10 +307,11 @@ def research_agent_node(state: AgentState, config: RunnableConfig) -> dict:
     thread_id = _thread_id_from_config(config)
     tool = make_retrieve_documents_tool(thread_id)
     from backend.llm import llm_fast
+    prompt = _build_prompt_with_ltm(RESEARCH_AGENT_PROMPT, state)
     agent = _get_cached_agent(
         [tavily_search, wikipedia_search, url_reader, datetime_tool, tool],
         llm_fast,
-        prompt=RESEARCH_AGENT_PROMPT,
+        prompt=prompt,
         thread_id=thread_id,
     )
     safe_messages = truncate_messages_if_needed(state["messages"])
@@ -320,10 +336,11 @@ def analysis_agent_node(state: AgentState, config: RunnableConfig) -> dict:
     thread_id = _thread_id_from_config(config)
     tool = make_retrieve_documents_tool(thread_id)
     from backend.llm import llm_fast
+    prompt = _build_prompt_with_ltm(ANALYSIS_AGENT_PROMPT, state)
     agent = _get_cached_agent(
         [calculator, code_interpreter, tool],
         llm_fast,
-        prompt=ANALYSIS_AGENT_PROMPT,
+        prompt=prompt,
         thread_id=thread_id,
     )
     safe_messages = truncate_messages_if_needed(state["messages"])
@@ -354,7 +371,8 @@ def chat_agent_node(state: AgentState, config: RunnableConfig) -> dict:
     thread_id = _thread_id_from_config(config)
     rag_tool = make_retrieve_documents_tool(thread_id)
     from backend.llm import llm_fast
-    agent = _get_cached_agent([rag_tool], llm_fast, prompt=CHAT_AGENT_PROMPT, thread_id=thread_id)
+    prompt = _build_prompt_with_ltm(CHAT_AGENT_PROMPT, state)
+    agent = _get_cached_agent([rag_tool], llm_fast, prompt=prompt, thread_id=thread_id)
     safe_messages = truncate_messages_if_needed(state["messages"])
     result = agent.invoke({"messages": safe_messages}, config=config)
     text = _output_from_messages(result["messages"])

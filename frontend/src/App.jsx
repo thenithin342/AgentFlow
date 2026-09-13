@@ -21,7 +21,7 @@ import rehypeSanitize from 'rehype-sanitize';
 
 import { MAX_UPLOAD_BYTES, AGENT_COLORS } from "./constants";
 import { getToken, clearToken, isExpired, getUsername } from "./auth";
-import { apiFetch, silentRefresh } from "./api/client";
+import { apiFetch, silentRefresh, waitForBackend } from "./api/client";
 import { agentLabelFromRoute, uuid, parseCitations, now } from "./utils";
 import LoginScreen from "./LoginScreen.jsx";
 import useSSE from "./hooks/useSSE";
@@ -602,10 +602,45 @@ function ChatApp({ currentUser, onLogout }) {
       {
         role: "agent",
         agent: "router",
-        text: `⏳ Indexing **${file.name}**… this may take up to a minute on first upload.`,
+        text: `⏳ Checking backend…`,
         id: uploadingMsgId,
       },
     ]);
+
+    // Wake up the backend if it is cold-starting (Render free tier sleeps
+    // after 15 min of inactivity). Poll /healthz before sending the upload
+    // so we don't hit a connection-refused network error.
+    const updateWakeMsg = (secs) => {
+      setMessages((m) => m.map((msg) =>
+        msg.id === uploadingMsgId
+          ? { ...msg, text: `🔄 Backend is waking up… (${secs}s) — please wait` }
+          : msg
+      ));
+    };
+    try {
+      const alive = await waitForBackend(updateWakeMsg);
+      if (!alive) {
+        setMessages((m) => m.filter((msg) => msg.id !== uploadingMsgId));
+        showError("Backend did not respond in time. Please try again.");
+        setIsUploading(false);
+        e.target.value = "";
+        return;
+      }
+    } catch (wakeErr) {
+      setMessages((m) => m.filter((msg) => msg.id !== uploadingMsgId));
+      showError(wakeErr.message || "Could not reach backend");
+      setIsUploading(false);
+      e.target.value = "";
+      return;
+    }
+
+    // Backend is alive — update placeholder to show indexing state
+    setMessages((m) => m.map((msg) =>
+      msg.id === uploadingMsgId
+        ? { ...msg, text: `⏳ Indexing **${file.name}**… this may take up to a minute on first upload.` }
+        : msg
+    ));
+
     try {
       // `res.ok` covers the 400 (bad thread_id / wrong file type) and 500
       // (ingest failure) cases — without the check, a rejected upload

@@ -47,6 +47,33 @@ const DEFAULT_TIMEOUT_MS = 25_000;
 // On a cold Render free-tier instance this can take 60-90 s.
 const UPLOAD_TIMEOUT_MS = 120_000;
 
+// How long to poll /healthz waiting for a cold-start Render instance to wake.
+const WAKE_POLL_INTERVAL_MS = 3_000;
+const WAKE_MAX_WAIT_MS = 90_000;
+
+/**
+ * Poll /healthz until the backend responds 200, or until WAKE_MAX_WAIT_MS.
+ * Calls onWaiting(secondsElapsed) each poll so the UI can show progress.
+ * Returns true if backend became ready, false if it timed out.
+ */
+export async function waitForBackend(onWaiting) {
+  const start = Date.now();
+  while (Date.now() - start < WAKE_MAX_WAIT_MS) {
+    try {
+      const res = await fetch(apiUrl("/healthz"), {
+        signal: AbortSignal.timeout(4_000),
+      });
+      if (res.ok) return true;
+    } catch {
+      // still booting — swallow network errors
+    }
+    const elapsed = Math.round((Date.now() - start) / 1000);
+    if (onWaiting) onWaiting(elapsed);
+    await new Promise((r) => setTimeout(r, WAKE_POLL_INTERVAL_MS));
+  }
+  return false;
+}
+
 export async function apiFetch(path, options = {}) {
   const token = getToken();
   const headers = { ...(options.headers || {}) };
