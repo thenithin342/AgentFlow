@@ -137,9 +137,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             # The sync graph (build_compiled_graph / tests / CLI) uses
             # blog_writer_node_sync from build_graph.py.
             from backend.graph.blog_agent import blog_writer_node as _async_blog
-            builder.nodes["blog_writer"] = builder.nodes["blog_writer"]._replace(
-                runnable=_async_blog  # type: ignore[arg-type]  # LangGraph accepts async callables at runtime
-            )
+            builder.nodes["blog_writer"] = builder.nodes["blog_writer"]._replace(runnable=_async_blog)  # type: ignore[attr-defined,arg-type]
 
             app.state.graph = builder.compile(checkpointer=checkpointer)
             app.state.graph.name = "AgentFlow"
@@ -183,9 +181,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
                 # Swap blog_writer to async node for the FastAPI server.
                 from backend.graph.blog_agent import blog_writer_node as _async_blog
-                builder.nodes["blog_writer"] = builder.nodes["blog_writer"]._replace(
-                    runnable=_async_blog  # type: ignore[arg-type]  # LangGraph accepts async callables at runtime
-                )
+                builder.nodes["blog_writer"] = builder.nodes["blog_writer"]._replace(runnable=_async_blog)  # type: ignore[attr-defined,arg-type]
 
                 app.state.graph = builder.compile(checkpointer=checkpointer)
                 app.state.graph.name = "AgentFlow"
