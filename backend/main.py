@@ -42,6 +42,7 @@ import time as _time
 import uuid as _uuid_mod
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from typing import Any
 
 import aiosqlite
 import structlog
@@ -78,6 +79,20 @@ from backend.dependencies import limiter
 from backend.graph.build_graph import builder
 from backend.rag.ingest import warm_embeddings
 from backend.routers import admin, auth, chat, health, threads, upload
+
+# ---------------------------------------------------------------------------
+# Helper: cross-Python version (3.11-3.14+) node replacement
+# ---------------------------------------------------------------------------
+
+
+def _swap_node_runnable(node: Any, new_runnable: Any) -> Any:
+    """Safely replace runnable on StateNodeSpec across Python 3.11-3.14 / NamedTuples / Dataclasses."""
+    if hasattr(node, "__replace__"):
+        return node.__replace__(runnable=new_runnable)
+    if hasattr(node, "_replace"):
+        return node._replace(runnable=new_runnable)
+    raise AttributeError(f"StateNodeSpec object {node} has neither __replace__ nor _replace")
+
 
 # ---------------------------------------------------------------------------
 # Lifespan: async graph + checkpointer + admin bootstrap
@@ -137,7 +152,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             # The sync graph (build_compiled_graph / tests / CLI) uses
             # blog_writer_node_sync from build_graph.py.
             from backend.graph.blog_agent import blog_writer_node as _async_blog
-            builder.nodes["blog_writer"] = builder.nodes["blog_writer"]._replace(runnable=_async_blog)  # type: ignore[attr-defined,arg-type]
+            builder.nodes["blog_writer"] = _swap_node_runnable(builder.nodes["blog_writer"], _async_blog)  # type: ignore[arg-type]
 
             app.state.graph = builder.compile(checkpointer=checkpointer)
             app.state.graph.name = "AgentFlow"
@@ -181,7 +196,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
                 # Swap blog_writer to async node for the FastAPI server.
                 from backend.graph.blog_agent import blog_writer_node as _async_blog
-                builder.nodes["blog_writer"] = builder.nodes["blog_writer"]._replace(runnable=_async_blog)  # type: ignore[attr-defined,arg-type]
+                builder.nodes["blog_writer"] = _swap_node_runnable(builder.nodes["blog_writer"], _async_blog)  # type: ignore[arg-type]
 
                 app.state.graph = builder.compile(checkpointer=checkpointer)
                 app.state.graph.name = "AgentFlow"
