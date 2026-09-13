@@ -42,6 +42,11 @@ export async function silentRefresh() {
 // with a watchdog; this covers all other routes.
 const DEFAULT_TIMEOUT_MS = 25_000;
 
+// Upload timeout: the backend must load the embedding model (~80 MB),
+// run FastEmbed over all chunks, and write the FAISS index to disk.
+// On a cold Render free-tier instance this can take 60-90 s.
+const UPLOAD_TIMEOUT_MS = 120_000;
+
 export async function apiFetch(path, options = {}) {
   const token = getToken();
   const headers = { ...(options.headers || {}) };
@@ -51,7 +56,10 @@ export async function apiFetch(path, options = {}) {
 
   // Compose caller-provided signal with a hard per-request deadline.
   // AbortSignal.any() is available in all evergreen browsers (2024+).
-  const timeoutSignal = AbortSignal.timeout(DEFAULT_TIMEOUT_MS);
+  // Use a longer timeout for /upload because embedding can take 60-90 s on cold start.
+  const isUpload = path === "/upload";
+  const timeoutMs = isUpload ? UPLOAD_TIMEOUT_MS : DEFAULT_TIMEOUT_MS;
+  const timeoutSignal = AbortSignal.timeout(timeoutMs);
   const signal = options.signal
     ? AbortSignal.any([options.signal, timeoutSignal])
     : timeoutSignal;

@@ -594,6 +594,18 @@ function ChatApp({ currentUser, onLogout }) {
     fd.append("thread_id", threadId);
     fd.append("file", file);
     setIsUploading(true);
+    // Optimistic placeholder so the user knows the upload is in progress
+    // (embedding on a cold Render instance can take 60-90 s)
+    const uploadingMsgId = crypto.randomUUID();
+    setMessages((m) => [
+      ...m,
+      {
+        role: "agent",
+        agent: "router",
+        text: `⏳ Indexing **${file.name}**… this may take up to a minute on first upload.`,
+        id: uploadingMsgId,
+      },
+    ]);
     try {
       // `res.ok` covers the 400 (bad thread_id / wrong file type) and 500
       // (ingest failure) cases — without the check, a rejected upload
@@ -606,17 +618,20 @@ function ChatApp({ currentUser, onLogout }) {
         const chunks = stats?.chunks ?? "?";
         const pages  = stats?.pages  ?? "?";
         const label  = `📄 **${file.name}** indexed — ${pages} page(s), ${chunks} chunk(s). You can now ask questions about it.`;
-        setMessages((m) => [
-          ...m,
-          { role: "agent", agent: "router", text: label, id: crypto.randomUUID() },
-        ]);
+        // Replace the "indexing..." placeholder with the success message
+        setMessages((m) => m.map((msg) =>
+          msg.id === uploadingMsgId ? { ...msg, text: label } : msg
+        ));
         setTrace((t) => [...t, { node: "router", label: "PDF indexed", time: now() }]);
       } else {
         let detail = "";
         try { const body = await res.json(); detail = body?.detail || ""; } catch { /* non-JSON error body — use status only */ }
+        // Remove the placeholder on failure and show the error
+        setMessages((m) => m.filter((msg) => msg.id !== uploadingMsgId));
         showError(`Upload failed (${res.status})${detail ? ": " + detail : ""}`);
       }
     } catch (err) {
+      setMessages((m) => m.filter((msg) => msg.id !== uploadingMsgId));
       showError(err.message || "upload failed");
     } finally {
       setIsUploading(false);
