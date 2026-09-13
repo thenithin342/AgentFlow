@@ -270,12 +270,14 @@ agentflow/
 │
 ├── backend/
 │   ├── main.py              # FastAPI app — lifespan, endpoints, SSE streaming
-│   ├── auth.py              # JWT auth + SQLite user store + CRUD helpers (Sprint 4)
+│   ├── auth.py              # JWT auth + SQLite user store + CRUD helpers
 │   ├── settings.py          # Pydantic Settings — all env vars in one place
 │   ├── llm.py               # Lazy LLM singletons; 3-key Groq pool + Gemini fallback
 │   ├── constants.py         # Upload/message limits; SSE node sets
 │   ├── validation.py        # thread_id regex + validator
 │   ├── security.py          # HMAC file signing for FAISS indexes
+│   ├── dependencies.py      # FastAPI deps — rate-limit key, SSE helper, state helpers
+│   ├── token_utils.py       # Token budget guard — estimate + truncate message history
 │   │
 │   ├── graph/
 │   │   ├── state.py         # AgentState TypedDict
@@ -293,11 +295,11 @@ agentflow/
 │   │   └── ingest.py        # ingest_pdf() + get_retriever(); auto-selects Qdrant or FAISS
 │   │
 │   ├── vectorstore/
-│   │   └── qdrant_store.py  # Qdrant adapter (Sprint 4)
+│   │   └── qdrant_store.py  # Qdrant adapter
 │   │
 │   └── routers/
 │       ├── auth.py          # POST /auth/login, /auth/refresh
-│       ├── admin.py         # Full CRUD /admin/users (Sprint 4)
+│       ├── admin.py         # Full CRUD /admin/users
 │       ├── chat.py          # POST /chat SSE streaming
 │       ├── upload.py        # POST /upload PDF ingestion
 │       ├── threads.py       # GET /threads, /threads/{id}/state
@@ -305,22 +307,41 @@ agentflow/
 │
 ├── frontend/
 │   └── src/
-│       ├── App.jsx          # Root layout, tab navigation
+│       ├── App.jsx              # Root component — auth gate, tab router, JWT renewal
+│       ├── LoginScreen.jsx      # Login form
+│       ├── ErrorBoundary.jsx    # Per-message error isolation
+│       ├── auth.js              # Token storage + expiry helpers
+│       ├── constants.js         # AGENT_COLORS + upload limits
+│       ├── utils.js             # uuid, parseCitations, agentLabelFromRoute
+│       ├── hooks/
+│       │   └── useSSE.js        # SSE reader hook with stall-hint watchdog
+│       ├── api/
+│       │   └── client.js        # Authenticated fetch + silent JWT refresh
+│       ├── components/
+│       │   ├── Chat/
+│       │   │   ├── MessageBubble.jsx  # Markdown + syntax highlighting (PrismLight)
+│       │   │   ├── ChatInput.jsx      # Textarea + upload button
+│       │   │   └── SourceChips.jsx    # Citation chips
+│       │   └── Sidebar/
+│       │       └── Sidebar.jsx        # Thread list + new-thread button
 │       ├── pages/
-│       │   ├── ChatPage.jsx     # Chat UI — SSE streaming, PDF upload, review panel
-│       │   ├── BlogPage.jsx     # Blog generation UI
-│       │   └── AdminPage.jsx    # User management CRUD UI
-│       ├── api/client.js    # Authenticated fetch wrapper
-│       ├── index.css        # Design tokens + layout
+│       │   ├── AdminPage.jsx    # User management CRUD UI
+│       │   └── BlogPage.jsx     # Blog generation UI
+│       ├── index.css            # CSS design tokens + layout
 │       └── main.jsx
 │
 ├── tests/
 │   ├── conftest.py          # Fixtures; rate-limit xfail guard
-│   ├── test_graph.py        # End-to-end graph tests
-│   ├── test_api.py          # FastAPI endpoint tests
+│   ├── test_graph.py        # End-to-end graph tests (RAG, human-review, multi-turn)
+│   ├── test_api.py          # FastAPI endpoint tests (/chat SSE, /upload, /review)
+│   ├── test_api_blog.py     # Blog-agent API tests
+│   ├── test_api_delete.py   # Thread delete API tests
 │   ├── test_router.py       # 20+ router classification examples
-│   ├── test_tools.py        # Calculator unit tests
-│   └── test_messages.py     # content_to_str unit tests
+│   ├── test_tools.py        # Calculator boundary conditions
+│   ├── test_messages.py     # content_to_str for all message content variants
+│   ├── test_memory.py       # STM compressor + LTM read/write
+│   ├── test_token_utils.py  # Token budget estimate + truncation
+│   └── test_dependencies.py # Rate-limit key selection + SSE helper
 │
 ├── faiss_indexes/           # Per-thread FAISS indexes (git-ignored)
 ├── ltm_indexes/             # Per-user LTM FAISS indexes (git-ignored)
@@ -349,7 +370,7 @@ agentflow/
 | **Embeddings** | `all-MiniLM-L6-v2` (HuggingFace) | Runs locally — avoids API quota burn on embedding calls |
 | **Persistence** | SQLite (`SqliteSaver` / `AsyncSqliteSaver`) | Zero-setup; `PostgresSaver` documented as upgrade path |
 | **Backend** | FastAPI 0.115 + Uvicorn | Async; `StreamingResponse` + `astream_events` for SSE |
-| **Frontend** | React 18 + Vite 5 + Tailwind CSS | `react-markdown`, `react-syntax-highlighter`, SSE streaming reader |
+| **Frontend** | React 18 + Vite 7 + Vanilla CSS | `react-markdown`, `react-syntax-highlighter` (PrismLight), SSE streaming reader |
 | **Config** | `python-dotenv` | `.env` file; never committed |
 | **Testing** | pytest + pytest-asyncio + httpx | Node-level, graph-level, and full API tests |
 
@@ -359,7 +380,9 @@ agentflow/
 
 ## Build Phases
 
-The project is built in 8 incremental phases. Each phase proves the previous one's wiring before adding complexity — never skip ahead.
+The project is built in incremental phases. Each phase proves the previous one's wiring before adding complexity.
+
+### Core Sprints
 
 | # | What gets built | Status |
 |---|---|---|
@@ -374,19 +397,29 @@ The project is built in 8 incremental phases. Each phase proves the previous one
 | 9 | JWT auth, rate-limiting, LTM, Blog agent, Admin panel | ✅ Complete |
 | 10 | Qdrant vector store, SQLite user store, full CRUD admin | ✅ Complete |
 
+### Modernisation Audit (Phases 1–5)
+
+| Phase | Focus | Key Changes | Status |
+|---|---|---|---|
+| **M-1** | Security | Admin password hashing, rate-limit key fixes, `Depends()` wiring | ✅ Complete |
+| **M-2** | UX | Theme persistence, `aria-hidden` accessibility, per-message `ErrorBoundary` | ✅ Complete |
+| **M-3** | UX | Escalating stall hints in `useSSE`, router fallback banner, blog toast, review discard | ✅ Complete |
+| **M-4** | DX / CI | Centralised `AGENT_COLORS`, ESLint CI gate, `--cov-fail-under=46`, Dependabot | ✅ Complete |
+| **M-5** | Architecture | Token budget guard (`token_utils.py`), per-user proxy-aware rate limiting | ✅ Complete |
+
 ---
 
 ## Testing
 
 ```bash
-# Full suite
-pytest tests/ -v
+# Full offline suite (excludes tests that require live API keys)
+pytest tests/ -v -m "not eval"
 
 # Single test file
-pytest tests/test_graph.py -v
+pytest tests/test_graph.py -v -m "not eval"
 
-# With coverage
-pytest tests/ --cov=backend --cov-report=term-missing
+# With coverage (coverage gate: 46% minimum enforced in CI)
+pytest tests/ -m "not eval" --cov=backend --cov-report=term-missing --cov-fail-under=46
 ```
 
 **Test categories**
@@ -396,10 +429,15 @@ pytest tests/ --cov=backend --cov-report=term-missing
 | `test_router.py` | 20+ labelled classification examples to catch routing drift |
 | `test_tools.py` | Calculator boundary conditions — overflow, depth, syntax errors |
 | `test_messages.py` | `content_to_str` for all message content variants |
-| `test_graph.py` | Full graph — research, analysis, chat, human-review interrupt, multi-turn memory |
-| `test_api.py` | FastAPI endpoints — `/chat` streaming, `/upload`, `/review`, `/health` |
+| `test_graph.py` | Full graph — research, analysis, chat, human-review interrupt, multi-turn memory, RAG |
+| `test_api.py` | FastAPI endpoints — `/chat` SSE, `/upload`, `/review`, `/health`, auth |
+| `test_api_blog.py` | Blog agent endpoint |
+| `test_api_delete.py` | Thread delete endpoint |
+| `test_memory.py` | STM compressor (`RemoveMessage`) and LTM read/write |
+| `test_token_utils.py` | Token budget estimation and history truncation |
+| `test_dependencies.py` | Per-user rate-limit key selection and SSE formatting |
 
-**Note on rate limits.** The Groq free tier is capped at 100 K tokens/day. Tests that hit this cap are automatically marked `xfail` by the `_rate_limit_guard` autouse fixture — the suite shows `x` instead of `FAILED`.
+**Note on rate limits.** The Groq free tier is capped at 100 K tokens/day. Tests that hit this cap are automatically marked `xfail` by the `_rate_limit_guard` autouse fixture — the suite shows `x` instead of `FAILED`. Tests requiring a live API key are marked `@pytest.mark.eval` and excluded from CI with `-m 'not eval'`.
 
 ---
 

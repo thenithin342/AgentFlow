@@ -1,4 +1,4 @@
-import { getToken, clearToken } from "../auth";
+import { getToken, clearToken, setToken } from "../auth";
 
 const API_BASE = import.meta.env.VITE_API_BASE || "";
 export const apiUrl = (path) => `${API_BASE}${path}`;
@@ -22,7 +22,6 @@ export async function silentRefresh() {
       });
       if (refreshRes.ok) {
         const data = await refreshRes.json();
-        const { setToken } = await import("../auth");
         setToken(data.access_token);
         return data.access_token;
       }

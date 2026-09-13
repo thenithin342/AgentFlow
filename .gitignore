@@ -3,6 +3,7 @@ __pycache__/
 .coverage
 .coverage.*
 .pytest_cache/
+.mypy_cache/
 .venv/
 venv/
 **/.env

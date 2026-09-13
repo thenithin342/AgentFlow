@@ -9,6 +9,11 @@ Versioning: [Semantic Versioning](https://semver.org/)
 
 ## [Unreleased]
 
+### Fixed (build warnings — 2026-09-13)
+- **Mixed static/dynamic import of `auth.js`** — `client.js` statically imports `auth.js` at the top and was also using `await import("../auth")` inside `silentRefresh()`. Added `setToken` to the static import; removed the redundant dynamic `import()`. Eliminates Vite's "dynamically imported by X but also statically imported by Y" warning.
+- **Mixed static/dynamic import of `client.js`** — `App.jsx` statically imports `apiFetch` from `client.js` but also used `import("./api/client").then(m => m.silentRefresh())` in a `setInterval`. Added `silentRefresh` to the existing static import and called it directly. Eliminates the second Vite mixed-import warning.
+- **Bundle chunk size warning** — Production build emitted a `>500 kB` warning on the single vendor chunk. Switched `react-syntax-highlighter` from `Prism` (all 200+ languages) to `PrismLight` and registered only the 12 languages relevant to an AI assistant (Python, JS, TS, JSX, TSX, Bash, SQL, JSON, YAML, CSS, Markdown, Diff). Added `manualChunks` in `vite.config.js` to split vendors into three separate cacheable chunks: `react-vendor` (134 kB), `markdown-vendor` (170 kB), `syntax-vendor` (60 kB). All chunks now well under 500 kB with **0 build warnings**.
+
 ### Fixed (audit remediation — 2026-09-12)
 - **SafeHTTPSConnection** now inherits `SafeHTTPConnection` so SSRF pin and tunnel block work correctly on HTTPS targets
 - **code_interpreter** `__globals__` escape via `math`/`statistics` closed by `_SafeModule` wrapper

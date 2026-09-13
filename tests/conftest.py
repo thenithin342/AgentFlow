@@ -167,6 +167,7 @@ def _clean_checkpoint_db():
         # No DB yet — first run, nothing to clean. Tables are created
         # lazily on first invoke.
         yield
+        _close_old_default_graph()  # release connection before GC at process exit
         return
 
     con = sqlite3.connect(_db_path_for_wal(), check_same_thread=False)
@@ -196,6 +197,12 @@ def _clean_checkpoint_db():
     _close_old_default_graph()
 
     yield
+
+    # Teardown: explicitly close the graph's SQLite connection so the GC at
+    # process exit does not find an open sqlite3.Connection and emit a
+    # ResourceWarning (which pytest's unraisable-exception hook converts into
+    # a non-zero exit code even when all tests passed).
+    _close_old_default_graph()
 
 
 def _db_path_for_wal() -> str:

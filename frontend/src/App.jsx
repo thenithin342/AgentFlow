@@ -21,7 +21,7 @@ import rehypeSanitize from 'rehype-sanitize';
 
 import { MAX_UPLOAD_BYTES, AGENT_COLORS } from "./constants";
 import { getToken, clearToken, isExpired, getUsername } from "./auth";
-import { apiFetch } from "./api/client";
+import { apiFetch, silentRefresh } from "./api/client";
 import { agentLabelFromRoute, uuid, parseCitations, now } from "./utils";
 import LoginScreen from "./LoginScreen.jsx";
 import useSSE from "./hooks/useSSE";
@@ -140,7 +140,7 @@ export default function App() {
 
     // Silent JWT renewal every 20 min (1,200,000 ms)
     const refreshId = setInterval(() => {
-      import("./api/client").then(m => m.silentRefresh());
+      silentRefresh();
     }, 1_200_000);
 
     return () => {

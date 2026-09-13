@@ -47,7 +47,27 @@ export default defineConfig(({ mode }) => {
 
   return {
     plugins: [react()],
-    build: { sourcemap: "hidden" },
+    build: {
+      sourcemap: "hidden",
+      rollupOptions: {
+        output: {
+          manualChunks: {
+            "react-vendor": [
+              "react",
+              "react-dom",
+            ],
+            "markdown-vendor": [
+              "react-markdown",
+              "remark-gfm",
+              "rehype-sanitize",
+            ],
+            "syntax-vendor": [
+              "react-syntax-highlighter",
+            ],
+          },
+        },
+      },
+    },
     server: {
       port: 5173,
       proxy: proxyTargets,
