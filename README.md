@@ -35,7 +35,7 @@ AgentFlow is a full-stack multi-agent system that demonstrates every skill that 
 - **Conditional routing** — an LLM classifies every query and dispatches it to the right specialist agent, not a hardcoded keyword switch
 - **Multi-agent coordination** — three independent agent nodes (Research, Analysis, Chat), a Synthesizer, and a Human Review checkpoint, all wired into a single LangGraph `StateGraph`
 - **Durable persistence** — every node transition is checkpointed to SQLite via `SqliteSaver`/`AsyncSqliteSaver`; sessions survive backend restarts
-- **Retrieval-augmented generation** — PDF upload → recursive chunking → local sentence-transformer embeddings → per-thread FAISS index → cited retrieval
+- **Retrieval-augmented generation** — PDF upload → recursive chunking → Google `gemini-embedding-001` embeddings → per-thread FAISS index → cited retrieval
 - **Human-in-the-loop** — LangGraph `interrupt()` pauses execution so a human can approve or edit the draft before it reaches the user
 - **Real-time streaming** — FastAPI `StreamingResponse` wraps `astream_events` for token-level delivery to the React frontend
 
@@ -69,7 +69,7 @@ All seven nodes share a single `AgentState` TypedDict. Every transition is check
 | **Synthesizer** | `llama-3.3-70b` polishes raw agent output into a clean cited final response |
 | **Human review** | LangGraph `interrupt()` / `Command(resume=...)` with approve/edit contract |
 | **Durable state** | `SqliteSaver` (sync tests) + `AsyncSqliteSaver` (FastAPI server) keyed by `thread_id` |
-| **RAG pipeline** | `PyPDFLoader` → `RecursiveCharacterTextSplitter(800, 150)` → `all-MiniLM-L6-v2` → FAISS |
+| **RAG pipeline** | `PyPDFLoader` → `RecursiveCharacterTextSplitter(800, 150)` → `gemini-embedding-001` → FAISS |
 | **Streaming** | `astream_events(version="v2")` filtered to `on_chat_model_stream`, piped as SSE |
 | **Security** | `<<UNTRUSTED …>>` prompt injection barriers; AST-validated calculator; optional bearer-token API key |
 | **LLM fallback** | Up to 3 Groq keys in `RunnableWithFallbacks` chain + Gemini 2.0 Flash as last resort |
@@ -87,7 +87,7 @@ All seven nodes share a single `AgentState` TypedDict. Every transition is check
 | Node.js | 18+ | [nodejs.org](https://nodejs.org) |
 | Groq API key | free | [console.groq.com](https://console.groq.com) |
 | Tavily API key | free (1 000 searches/mo) | [tavily.com](https://tavily.com) |
-| Google AI Studio key *(optional)* | free (1 M tokens/day) | [aistudio.google.com](https://aistudio.google.com) |
+| Google AI Studio key | required for embeddings (RAG + memory); free 1 M tokens/day | [aistudio.google.com](https://aistudio.google.com) |
 
 ### 1 — Clone and install Python deps
 
@@ -117,7 +117,7 @@ Open `.env` and fill in your keys:
 GROQ_API_KEY=gsk_...
 TAVILY_API_KEY=tvly-...
 
-# Optional — enables Gemini fallback when Groq rate-limits
+# Required for RAG uploads + long-term memory (embeddings), also the Gemini fallback
 GOOGLE_API_KEY=AIza...
 
 # Optional — rotate across up to 3 Groq keys for higher TPM
@@ -137,7 +137,7 @@ LANGCHAIN_TRACING_V2=false
 uvicorn backend.main:app --reload --port 8000
 ```
 
-The server logs confirm the graph compiled and the embedding model loaded:
+The server logs confirm the graph compiled and the embedding provider is reachable:
 
 ```
 [AgentFlow] graph compiled OK; async checkpointer on agentflow.db
@@ -367,7 +367,7 @@ agentflow/
 | **Web search** | Tavily (`langchain-tavily`) | Purpose-built for LLM agents; 1 000 searches/mo free |
 | **Calculator** | Custom AST evaluator | Rejects names/calls/attributes; caps expression length, depth, exponents |
 | **Vector store** | FAISS `faiss-cpu` | Local, no hosted service; per-thread isolation |
-| **Embeddings** | `all-MiniLM-L6-v2` (HuggingFace) | Runs locally — avoids API quota burn on embedding calls |
+| **Embeddings** | `gemini-embedding-001` (Google API) | Zero local memory — avoids the ONNX model's ~120 MB resident cost on Render; model/dim set via `EMBED_MODEL` / `EMBED_DIM` |
 | **Persistence** | SQLite (`SqliteSaver` / `AsyncSqliteSaver`) | Zero-setup; `PostgresSaver` documented as upgrade path |
 | **Backend** | FastAPI 0.115 + Uvicorn | Async; `StreamingResponse` + `astream_events` for SSE |
 | **Frontend** | React 18 + Vite 7 + Vanilla CSS | `react-markdown`, `react-syntax-highlighter` (PrismLight), SSE streaming reader |
@@ -449,7 +449,9 @@ pytest tests/ -m "not eval" --cov=backend --cov-report=term-missing --cov-fail-u
 | `GROQ_API_KEY_2` | — | No | Secondary Groq key (rate-limit fallback) |
 | `GROQ_API_KEY_3` | — | No | Tertiary Groq key |
 | `TAVILY_API_KEY` | — | **Yes** | Tavily search API key |
-| `GOOGLE_API_KEY` | — | No | Google AI Studio key (Gemini fallback) |
+| `GOOGLE_API_KEY` | — | Yes (RAG + memory) | Google AI Studio key — required for embeddings (RAG + long-term memory); also the Gemini LLM fallback |
+| `EMBED_MODEL` | `models/gemini-embedding-001` | No | Embedding model id — change this (not code) when Google retires a model |
+| `EMBED_DIM` | `3072` | No | Embedding vector size; must match `EMBED_MODEL`'s output and the Qdrant collection size |
 | `CHECKPOINT_DB_PATH` | `agentflow.db` | No | SQLite checkpoint file path |
 | `CORS_ORIGINS` | `http://localhost:5173` | No | Comma-separated allowed origins |
 | `AGENTFLOW_API_KEY` | — | No | Bearer token for optional API auth |

@@ -43,10 +43,11 @@ import pytest
 # ---------------------------------------------------------------------------
 # GoogleGenerativeAIEmbeddings validates the API key at instantiation time.
 # CI has no key, so we replace _get_embeddings() in both ingest.py and ltm.py
-# with a deterministic fake that returns 768-dim vectors (matching
-# text-embedding-004) without any network call.  The fake is seeded from the
-# text so that identical strings always get identical vectors, which keeps
-# FAISS similarity searches sensible in tests.
+# with a deterministic fake that returns vectors of the configured dimension
+# (settings.embed_dim — same size the real provider reports) without any
+# network call.  The fake is seeded from the text so that identical strings
+# always get identical vectors, which keeps FAISS similarity searches
+# sensible in tests.
 #
 # This fixture is session-scoped and autouse=True so it silently applies to
 # ALL tests — no per-test annotation needed.
@@ -58,7 +59,7 @@ from backend.settings import get_settings
 
 
 class _DeterministicFakeEmbeddings(_LCEmbeddings):
-    """Produce 768-dim float vectors deterministically from text content.
+    """Produce settings.embed_dim-sized float vectors from text content.
 
     Inherits from langchain_core.embeddings.Embeddings so that FAISS's
     ``isinstance(embedding_function, Embeddings)`` check passes and it
@@ -71,6 +72,11 @@ class _DeterministicFakeEmbeddings(_LCEmbeddings):
       - unit-length normalised so cosine similarity works correctly
     """
 
+    # Dimension is read from Settings so the fake can never drift from the
+    # production embedding model (a mismatch would make FAISS indexes built
+    # in tests unloadable by the code under test).
+    dim: int = get_settings().embed_dim
+
     def _vec(self, text: str):
         import hashlib
 
@@ -79,7 +85,7 @@ class _DeterministicFakeEmbeddings(_LCEmbeddings):
         # Derive a 32-bit seed from the first 4 bytes of SHA-256.
         seed = int.from_bytes(hashlib.sha256(text.encode()).digest()[:4], "big")
         rng = np.random.RandomState(seed)
-        v = rng.randn(768).astype(np.float32)
+        v = rng.randn(self.dim).astype(np.float32)
         norm = float(np.linalg.norm(v)) or 1.0
         return (v / norm).tolist()
 

@@ -117,6 +117,18 @@ class Settings(BaseSettings):
     groq_smart_model: str = "openai/gpt-oss-120b"
     google_model: str = "gemini-2.5-flash"
 
+    # ---- Embeddings (RAG + Long-Term Memory) ----
+    # Google retires embedding models on a schedule — `text-embedding-004`
+    # started returning 404 NOT_FOUND for embedContent, which broke BOTH
+    # PDF ingestion (/upload → 500) and Long-Term Memory (silent read/write
+    # failure). Keeping the model + dimension in config means a future
+    # retirement is an env change, not a code change.
+    #
+    # `embed_dim` MUST be <= the model's max output dimension; it is also
+    # used as the Qdrant collection vector size.
+    embed_model: str = "models/gemini-embedding-001"
+    embed_dim: int = 3072
+
     # ---- Derived helpers ----
     @property
     def cors_origins_list(self) -> list[str]:

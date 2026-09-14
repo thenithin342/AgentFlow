@@ -321,6 +321,31 @@ async def test_upload_success(monkeypatch, client):
     assert body["chunks"] == 1
 
 
+async def test_upload_reports_embedding_failure(monkeypatch, client):
+    """A dead embedding provider must not surface as a bare 500.
+
+    Regression: the retired `text-embedding-004` model made /upload return
+    "internal server error", which gave the UI nothing to act on. It should
+    be reported as an upstream failure with an actionable hint.
+    """
+
+    def _boom(path, tid, *, source_name=None):
+        raise RuntimeError(
+            "GoogleGenerativeAIError: 404 NOT_FOUND models/text-embedding-004 is "
+            "not found for API version v1beta"
+        )
+
+    monkeypatch.setattr("backend.routers.upload.ingest_pdf", _boom)
+    files = {"file": ("doc.pdf", b"%PDF-1.4\n% fake", "application/pdf")}
+    r = await client.post(
+        "/upload",
+        data={"thread_id": "upload-embed-fail"},
+        files=files,
+    )
+    assert r.status_code == 502, r.text
+    assert "EMBED_MODEL" in r.json()["detail"]
+
+
 async def test_thread_state(monkeypatch, client):
     """GET /threads/{id}/state returns serialized values."""
     monkeypatch.setattr(app.state, "graph", _StateFakeGraph(), raising=False)

@@ -59,7 +59,16 @@ services:
         sync: false
 
       - key: GOOGLE_API_KEY
-        sync: false
+        sync: false          # required for embeddings (RAG + long-term memory)
+
+      # Embedding model for RAG + memory. Defaults are current (gemini-embedding-001).
+      # Override here when Google retires a model — no code change or redeploy of
+      # the app image is needed, just an env update.
+      - key: EMBED_MODEL
+        value: models/gemini-embedding-001
+
+      - key: EMBED_DIM
+        value: "3072"
 
       - key: ADMIN_PASSWORD
         sync: false          # set a strong value; required for admin bootstrap

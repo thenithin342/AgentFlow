@@ -14,7 +14,7 @@ from backend.auth import CurrentUser, make_thread_id, require_user
 from backend.constants import MAX_UPLOAD_BYTES
 from backend.dependencies import config_for, limiter
 from backend.logging_config import get_logger
-from backend.rag.ingest import ingest_pdf
+from backend.rag.ingest import describe_embedding_failure, ingest_pdf
 from backend.settings import get_settings
 from backend.validation import validate_thread_id
 
@@ -130,8 +130,14 @@ async def upload(
         raise
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except Exception:
+    except Exception as exc:
         logger.exception("upload_failed", thread_id=thread_id, user=user.username)
+        # A dead embedding provider (retired model id, bad key, quota) used to
+        # surface as a bare "internal server error", which is impossible to
+        # act on from the UI. Report it as an upstream failure with a hint.
+        hint = describe_embedding_failure(exc)
+        if hint:
+            raise HTTPException(status_code=502, detail=hint) from exc
         raise HTTPException(status_code=500, detail="internal server error")
     finally:
         if tmp_path and os.path.exists(tmp_path):

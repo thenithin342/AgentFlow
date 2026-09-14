@@ -7,10 +7,17 @@ Backend selection (Sprint 4):
     - When QDRANT_URL is unset → per-thread FAISS index on disk (original
       single-node behaviour, unchanged).
 
-Embeddings: Google Generative AI text-embedding-004 (API-based, 768-dim).
-No local model is downloaded — embeddings are computed via the Google API
-using the GOOGLE_API_KEY env var. This keeps memory well under Render's
-512 MB free-tier limit (the old FastEmbed ONNX model consumed ~120 MB).
+Embeddings: Google Generative AI `models/gemini-embedding-001` (API-based,
+3072-dim). No local model is downloaded — embeddings are computed via the
+Google API using the GOOGLE_API_KEY env var. This keeps memory well under
+Render's 512 MB free-tier limit (the old FastEmbed ONNX model consumed
+~120 MB).
+
+Model + dimension come from settings (EMBED_MODEL / EMBED_DIM). Google
+retires embedding models on a schedule — `models/text-embedding-004`
+started returning `404 NOT_FOUND` for embedContent, which took down PDF
+ingestion (/upload → 500) AND Long-Term Memory (silent read/write failure)
+at the same time. Config, not code, is the fix for the next retirement.
 
 Reference: DESIGN_DOC.md section 6 "RAG Pipeline", TECH_STACK.md section 4
 "Retrieval / RAG".
@@ -39,12 +46,79 @@ def _get_index_root() -> Path:
 
 INDEX_ROOT: Path = _get_index_root()
 
-# Google Generative AI embeddings — API-based, 768-dim, zero local memory.
+def _config_value(attr: str, env_name: str, default: str) -> str:
+    """Read an embedding config value from Settings, then env, then default."""
+    try:
+        from backend.settings import get_settings
+        value = getattr(get_settings(), attr, None)
+        if value:
+            return str(value)
+    except Exception:
+        logger.debug("[RAG] settings unavailable for %s; using env/default", attr)
+    return os.environ.get(env_name, "").strip() or default
+
+
+# Google Generative AI embeddings — API-based, zero local memory.
 # Requires GOOGLE_API_KEY env var (already set in Render for the LLM).
-_EMBED_MODEL = "models/text-embedding-004"
+_EMBED_MODEL = _config_value("embed_model", "EMBED_MODEL", "models/gemini-embedding-001")
+_EMBED_DIM = int(_config_value("embed_dim", "EMBED_DIM", "3072"))
 _EMBEDDINGS = None
 _EMBEDDINGS_LOCK = threading.Lock()
-_EMBEDDINGS_WARM = True  # no local model to warm — always ready
+# Flipped to False by warm_embeddings() when the provider probe fails, so
+# /readyz reports embeddings as unready instead of lying about it.
+_EMBEDDINGS_WARM = True
+
+
+# Substrings that identify an embedding-provider failure inside an
+# exception chain. Deliberately broad: langchain wraps google.genai errors
+# in `GoogleGenerativeAIError`, so the class name alone is not reliable.
+_EMBED_ERROR_MARKERS = (
+    "google",
+    "genai",
+    "embedcontent",
+    "embedding",
+    "not found for api version",
+    "api key not valid",
+)
+
+
+def _exception_chain_text(exc: BaseException) -> str:
+    """Flatten an exception + its __cause__/__context__ chain into one string."""
+    parts: list[str] = []
+    seen: set[int] = set()
+    cur: BaseException | None = exc
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        parts.append(f"{type(cur).__name__}: {cur}")
+        cur = cur.__cause__ or cur.__context__
+    return " | ".join(parts)
+
+
+def describe_embedding_failure(exc: BaseException) -> str | None:
+    """Return an actionable message when *exc* came from the embedding
+    provider, or None when it is an unrelated error.
+
+    Used by callers (e.g. /upload) that would otherwise report a bare
+    "internal server error" for what is actually a configuration problem.
+    """
+    text = _exception_chain_text(exc)
+    lowered = text.lower()
+    if not any(marker in lowered for marker in _EMBED_ERROR_MARKERS):
+        return None
+    model = _EMBED_MODEL
+    if "not found for api version" in lowered or "404" in lowered:
+        return (
+            f"embedding model '{model}' is not available from Google (404). "
+            "Set EMBED_MODEL (and EMBED_DIM) to a supported embedding model."
+        )
+    if "api key" in lowered or "unauthenticated" in lowered or "permission" in lowered:
+        return (
+            "embedding provider rejected the credential — check that "
+            "GOOGLE_API_KEY is set and valid."
+        )
+    if "quota" in lowered or "resource_exhausted" in lowered or "429" in lowered:
+        return "embedding provider quota exhausted — retry later or raise the quota."
+    return f"embedding provider unavailable ({text[:200]})."
 
 # FAISS-only caches — not used in Qdrant path
 _RETRIEVERS: OrderedDict[str, Any] = OrderedDict()
@@ -80,10 +154,29 @@ def _rag_collection_name(thread_id: str) -> str:
 
 
 def warm_embeddings() -> None:
-    """No-op: Google embeddings are API-based, no local model to load."""
-    # _EMBEDDINGS_WARM is set to True at module level so /readyz stays green
-    # without triggering any heavyweight model download.
-    pass
+    """Verify the embedding provider is reachable and update `_EMBEDDINGS_WARM`.
+
+    Google embeddings are API-based (no local model to load), so the only
+    thing worth checking at startup is that the configured model + key
+    actually work. A retired model id used to go unnoticed until the first
+    upload failed with an opaque 500 — the probe turns that into a startup
+    log line and an honest `/readyz`.
+
+    Never raises: a provider outage must not prevent the API from booting.
+    """
+    global _EMBEDDINGS_WARM
+    try:
+        _get_embeddings().embed_query("agentflow embedding warm-up probe")
+        _EMBEDDINGS_WARM = True
+        logger.info("[RAG] embedding provider OK (model=%s, dim=%d)", _EMBED_MODEL, _EMBED_DIM)
+    except Exception as exc:
+        _EMBEDDINGS_WARM = False
+        logger.error(
+            "[RAG] embedding provider check FAILED — RAG uploads and long-term "
+            "memory will not work: %s",
+            describe_embedding_failure(exc) or exc,
+            exc_info=True,
+        )
 
 
 def _get_embeddings():
@@ -94,7 +187,10 @@ def _get_embeddings():
     with _EMBEDDINGS_LOCK:
         if _EMBEDDINGS is None:
             from langchain_google_genai import GoogleGenerativeAIEmbeddings
-            _EMBEDDINGS = GoogleGenerativeAIEmbeddings(model=_EMBED_MODEL)
+            _EMBEDDINGS = GoogleGenerativeAIEmbeddings(
+                model=_EMBED_MODEL,
+                output_dimensionality=_EMBED_DIM,
+            )
         return _EMBEDDINGS
 
 
@@ -139,10 +235,16 @@ def _write_model_tag(index_path: Path) -> None:
 
 
 def _check_model_tag(index_path: Path) -> bool:
-    """Return True if the stored model tag matches _EMBED_MODEL."""
+    """Return True if the stored model tag matches the configured model.
+
+    An *untagged* index is treated as incompatible: every index written
+    before the tag existed was produced by a different embedding model
+    (bge-small-en-v1.5, 384-dim), so loading it and adding new vectors would
+    raise a dimension error on every upload.
+    """
     tag_file = index_path / "embed_model.txt"
     if not tag_file.exists():
-        return True
+        return False
     return tag_file.read_text(encoding="utf-8").strip() == _EMBED_MODEL
 
 
@@ -214,7 +316,12 @@ def ingest_pdf(
     if _use_qdrant():
         try:
             _ingest_qdrant(thread_id, chunks)
-        except Exception:
+        except Exception as exc:
+            # An embedding failure will fail the FAISS path too (and the
+            # retry doubles the provider calls), so propagate it instead of
+            # pretending a fallback was attempted.
+            if describe_embedding_failure(exc):
+                raise
             logger.warning(
                 "[RAG] Qdrant ingest failed for thread %s — falling back to FAISS.",
                 thread_id[:16],
@@ -299,11 +406,24 @@ def _ingest_faiss(thread_id: str, chunks: list) -> None:
         out = _index_dir(thread_id)
         out.mkdir(parents=True, exist_ok=True)
         embeddings = _get_embeddings()
+        index = None
         if _faiss_index_files_valid(out):
-            index = _load_faiss_index(out)
-            index.add_documents(chunks)
-        else:
+            try:
+                index = _load_faiss_index(out)
+            except (ValueError, FileNotFoundError) as exc:
+                # The stored index was built with a retired/other embedding
+                # model. It can never accept vectors from the current model,
+                # so rebuild from these chunks instead of failing the upload.
+                logger.warning(
+                    "[RAG] rebuilding incompatible FAISS index for thread %s: %s",
+                    thread_id[:16],
+                    exc,
+                )
+                index = None
+        if index is None:
             index = FAISS.from_documents(chunks, embeddings)
+        else:
+            index.add_documents(chunks)
         index.save_local(str(out))
         from backend.security import sign_file
         sign_file(out / "index.pkl")

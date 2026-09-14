@@ -127,7 +127,13 @@ def _ltm_dir(user_id: str) -> Path:
 
 
 def _load_index(user_id: str):
-    """Load the user's FAISS index, or return None if it doesn't exist yet."""
+    """Load the user's FAISS index, or return None if it doesn't exist yet.
+
+    Returns None — rather than raising — when the index was built with a
+    different embedding model. Memories embedded with a retired model can
+    never be compared against vectors from the current model, so the caller
+    starts a fresh index instead of failing every read/write forever.
+    """
     try:
         from langchain_community.vectorstores import FAISS
         idx_dir = _ltm_dir(user_id)
@@ -138,6 +144,14 @@ def _load_index(user_id: str):
             if not verify_file(pkl_file):
                 logger.error(
                     "[LTM] Integrity check failed for user %s index.pkl", _mask_id(user_id)
+                )
+                return None
+            from backend.rag.ingest import _check_model_tag
+            if not _check_model_tag(idx_dir):
+                logger.info(
+                    "[LTM] index for user %s was built with a different embedding "
+                    "model — starting a fresh memory index",
+                    _mask_id(user_id),
                 )
                 return None
             return FAISS.load_local(
@@ -155,8 +169,13 @@ def _save_index(user_id: str, index) -> None:
     idx_dir = _ltm_dir(user_id)
     idx_dir.mkdir(parents=True, exist_ok=True)
     index.save_local(str(idx_dir))
+    from backend.rag.ingest import _write_model_tag
     from backend.security import sign_file
     sign_file(idx_dir / "index.pkl")
+    # Tag the index with the embedding model so a future model change is
+    # detected on load (see _load_index) instead of crashing on a dimension
+    # mismatch mid-retrieval.
+    _write_model_tag(idx_dir)
 
 
 # ---------------------------------------------------------------------------

@@ -9,10 +9,11 @@ logic.
 Design decisions:
   - One Qdrant collection per user (LTM) or per thread (RAG), named by
     the SHA-256 hash of the id — consistent with the current FAISS layout.
-  - Vectors use the same BAAI/bge-small-en-v1.5 model (384-dim) as FAISS
-    so no re-embedding is needed when switching backends.
-  - Collection creation is idempotent (create_collection with
-    if_not_exists=True semantics via get_or_create).
+  - Vectors use the same embedding model as the FAISS path (see
+    rag/ingest.py), so no re-embedding is needed when switching backends.
+  - Collections are created on demand and recreated when the configured
+    embedding dimension changes — a collection built for the old model
+    would reject every upsert (and silently kill LTM writes).
   - The Qdrant client is a module-level singleton — one connection pool
     for the whole process.
 """
@@ -25,11 +26,17 @@ from typing import Any
 
 logger = logging.getLogger("agentflow.vectorstore.qdrant")
 
-# Vector dimensionality for Google text-embedding-004
-_VECTOR_SIZE = 768
-
 _CLIENT: Any = None          # qdrant_client.QdrantClient singleton
 _CLIENT_LOCK = threading.Lock()
+
+
+def _vector_size() -> int:
+    """Vector dimensionality for the configured embedding model."""
+    try:
+        from backend.settings import get_settings
+        return int(get_settings().embed_dim)
+    except Exception:
+        return 3072
 
 
 def _get_client():
@@ -59,23 +66,61 @@ def _get_client():
         return _CLIENT
 
 
-def _ensure_collection(collection_name: str) -> None:
-    """Create the Qdrant collection if it does not already exist.
+def _existing_vector_size(client, collection_name: str) -> int | None:
+    """Return the configured vector size of an existing collection.
 
-    Uses cosine distance to match the FAISS IndexFlatL2 behaviour at the
-    semantic search level (cosine works better than L2 for normalised
-    sentence-transformer embeddings).
+    Returns None when the size cannot be determined (named vectors, older
+    server versions, transient error) — callers then leave the collection
+    alone rather than destroying it on a guess.
     """
+    try:
+        params = client.get_collection(collection_name).config.params.vectors
+        size = getattr(params, "size", None)
+        if size is None and isinstance(params, dict):
+            size = params.get("size")
+        return int(size) if size is not None else None
+    except Exception:
+        logger.debug("[Qdrant] could not read vector size for '%s'", collection_name, exc_info=True)
+        return None
+
+
+def _create_collection(client, collection_name: str, size: int) -> None:
     from qdrant_client.models import Distance, VectorParams
 
+    client.create_collection(
+        collection_name=collection_name,
+        vectors_config=VectorParams(size=size, distance=Distance.COSINE),
+    )
+    logger.info("[Qdrant] created collection '%s' (dim=%d)", collection_name, size)
+
+
+def _ensure_collection(collection_name: str) -> None:
+    """Create the collection, or recreate it if its dimension is stale.
+
+    A collection created for a previous embedding model has a fixed vector
+    size — Qdrant rejects every upsert that doesn't match it. Since those
+    vectors are unusable with the current model anyway, the collection is
+    dropped and recreated. Uses cosine distance, which matches the
+    normalised embeddings both Google models return.
+    """
     client = _get_client()
+    size = _vector_size()
     existing = {c.name for c in client.get_collections().collections}
     if collection_name not in existing:
-        client.create_collection(
-            collection_name=collection_name,
-            vectors_config=VectorParams(size=_VECTOR_SIZE, distance=Distance.COSINE),
+        _create_collection(client, collection_name, size)
+        return
+
+    current = _existing_vector_size(client, collection_name)
+    if current is not None and current != size:
+        logger.warning(
+            "[Qdrant] collection '%s' has dim=%s but the configured embedding "
+            "model produces dim=%d — recreating the collection",
+            collection_name,
+            current,
+            size,
         )
-        logger.info("[Qdrant] created collection '%s'", collection_name)
+        client.delete_collection(collection_name)
+        _create_collection(client, collection_name, size)
 
 
 class QdrantStore:

@@ -9,6 +9,16 @@ Versioning: [Semantic Versioning](https://semver.org/)
 
 ## [Unreleased]
 
+### Fixed (embedding provider outage — 2026-09-14)
+- **`POST /upload` returned 500 and Long-Term Memory went silent** — both traced to one cause: `models/text-embedding-004` was hardcoded and Google retired it, so every `embedContent` call returned `404 NOT_FOUND`. Ingestion raised (upload → `500 internal server error`) while LTM swallowed the same error and returned no memories — hence "what is my name" no longer being answered from facts stated in another thread.
+- **Embedding model + dimension are now configuration** — new `EMBED_MODEL` (default `models/gemini-embedding-001`) and `EMBED_DIM` (default `3072`) settings, wired through Settings → `rag/ingest.py` → `qdrant_store.py`. The next model retirement is an env change, not a code change.
+- **`warm_embeddings()` actually verifies the provider** — it previously returned immediately (`_EMBEDDINGS_WARM = True` unconditionally), so `/readyz` reported embeddings healthy while every embedding call failed. It now performs one probe embed, logs an actionable error, and reports unready.
+- **Uploads self-heal stale indexes** — a per-thread FAISS index tagged with a different embedding model is detected and rebuilt from the new chunks instead of failing the request; untagged (pre-tag) indexes are treated as incompatible rather than optimistically loaded and then crashing on a dimension mismatch.
+- **LTM indexes carry a model tag** — `memory/ltm.py` refuses to load a memory index built by another model (which would raise a dimension error on every read/write) and starts a fresh one instead.
+- **Qdrant collections recreate on dimension change** — `_ensure_collection` now compares the existing collection's vector size with the configured `EMBED_DIM` and recreates it on mismatch; without this, a collection created for the old 768-dim model rejected every upsert and killed LTM writes silently.
+- **Embedding failures are reported, not hidden** — `/upload` returns `502` with an actionable message (missing/invalid key, retired model, exhausted quota) instead of an opaque `500`; `describe_embedding_failure()` walks the exception chain so langchain's wrapped `GoogleGenerativeAIError` is classified correctly.
+- **Tests** — new `tests/test_embeddings.py` (config wiring, model-tag handling, index rebuild, failure classification, Qdrant dimension guard); the CI fake-embeddings dimension is now read from Settings so it cannot drift from the configured model.
+
 ### Fixed (build warnings — 2026-09-13)
 - **Mixed static/dynamic import of `auth.js`** — `client.js` statically imports `auth.js` at the top and was also using `await import("../auth")` inside `silentRefresh()`. Added `setToken` to the static import; removed the redundant dynamic `import()`. Eliminates Vite's "dynamically imported by X but also statically imported by Y" warning.
 - **Mixed static/dynamic import of `client.js`** — `App.jsx` statically imports `apiFetch` from `client.js` but also used `import("./api/client").then(m => m.silentRefresh())` in a `setInterval`. Added `silentRefresh` to the existing static import and called it directly. Eliminates the second Vite mixed-import warning.
