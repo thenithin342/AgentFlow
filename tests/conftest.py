@@ -38,11 +38,6 @@ os.environ["QDRANT_URL"] = ""
 
 import pytest
 
-from backend.graph import build_graph
-from backend.rag.ingest import INDEX_ROOT
-from backend.settings import get_settings
-
-
 # ---------------------------------------------------------------------------
 # Fake embeddings — avoids GOOGLE_API_KEY requirement in CI
 # ---------------------------------------------------------------------------
@@ -55,18 +50,30 @@ from backend.settings import get_settings
 #
 # This fixture is session-scoped and autouse=True so it silently applies to
 # ALL tests — no per-test annotation needed.
+from langchain_core.embeddings import Embeddings as _LCEmbeddings
 
-class _DeterministicFakeEmbeddings:
+from backend.graph import build_graph
+from backend.rag.ingest import INDEX_ROOT
+from backend.settings import get_settings
+
+
+class _DeterministicFakeEmbeddings(_LCEmbeddings):
     """Produce 768-dim float vectors deterministically from text content.
 
+    Inherits from langchain_core.embeddings.Embeddings so that FAISS's
+    ``isinstance(embedding_function, Embeddings)`` check passes and it
+    calls ``embed_documents`` / ``embed_query`` instead of trying to call
+    the object directly (which would raise TypeError).
+
     Uses a numpy RandomState seeded from the SHA-256 of the text so:
-      - identical inputs → identical vectors (deterministic for FAISS tests)
+      - identical inputs → identical vectors (deterministic for FAISS)
       - no NaN/Inf (numpy randn never produces those)
       - unit-length normalised so cosine similarity works correctly
     """
 
     def _vec(self, text: str):
         import hashlib
+
         import numpy as np
 
         # Derive a 32-bit seed from the first 4 bytes of SHA-256.
@@ -86,8 +93,8 @@ class _DeterministicFakeEmbeddings:
 @pytest.fixture(scope="session", autouse=True)
 def _fake_embeddings_for_ci():
     """Patch _get_embeddings in ingest and ltm so CI never needs GOOGLE_API_KEY."""
-    import backend.rag.ingest as _ingest
     import backend.memory.ltm as _ltm
+    import backend.rag.ingest as _ingest
 
     fake = _DeterministicFakeEmbeddings()
 
