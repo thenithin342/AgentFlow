@@ -25,8 +25,8 @@ from typing import Any
 
 logger = logging.getLogger("agentflow.vectorstore.qdrant")
 
-# Vector dimensionality for BAAI/bge-small-en-v1.5
-_VECTOR_SIZE = 384
+# Vector dimensionality for Google text-embedding-004
+_VECTOR_SIZE = 768
 
 _CLIENT: Any = None          # qdrant_client.QdrantClient singleton
 _CLIENT_LOCK = threading.Lock()

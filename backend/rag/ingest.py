@@ -7,8 +7,10 @@ Backend selection (Sprint 4):
     - When QDRANT_URL is unset → per-thread FAISS index on disk (original
       single-node behaviour, unchanged).
 
-Both backends use BAAI/bge-small-en-v1.5 (FastEmbed ONNX, ~80MB resident)
-so no re-embedding is needed when switching backends.
+Embeddings: Google Generative AI text-embedding-004 (API-based, 768-dim).
+No local model is downloaded — embeddings are computed via the Google API
+using the GOOGLE_API_KEY env var. This keeps memory well under Render's
+512 MB free-tier limit (the old FastEmbed ONNX model consumed ~120 MB).
 
 Reference: DESIGN_DOC.md section 6 "RAG Pipeline", TECH_STACK.md section 4
 "Retrieval / RAG".
@@ -23,7 +25,6 @@ from pathlib import Path
 from typing import Any
 
 from langchain_community.document_loaders import PyPDFLoader
-from langchain_community.embeddings import FastEmbedEmbeddings
 from langchain_community.vectorstores import FAISS
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
@@ -38,10 +39,12 @@ def _get_index_root() -> Path:
 
 INDEX_ROOT: Path = _get_index_root()
 
-_EMBED_MODEL = "BAAI/bge-small-en-v1.5"
-_EMBEDDINGS: FastEmbedEmbeddings | None = None
+# Google Generative AI embeddings — API-based, 768-dim, zero local memory.
+# Requires GOOGLE_API_KEY env var (already set in Render for the LLM).
+_EMBED_MODEL = "models/text-embedding-004"
+_EMBEDDINGS = None
 _EMBEDDINGS_LOCK = threading.Lock()
-_EMBEDDINGS_WARM = False  # public read-only flag for /readyz short-circuit
+_EMBEDDINGS_WARM = True  # no local model to warm — always ready
 
 # FAISS-only caches — not used in Qdrant path
 _RETRIEVERS: OrderedDict[str, Any] = OrderedDict()
@@ -77,18 +80,21 @@ def _rag_collection_name(thread_id: str) -> str:
 
 
 def warm_embeddings() -> None:
-    """Load the embedding model (call from FastAPI lifespan)."""
-    _get_embeddings()
+    """No-op: Google embeddings are API-based, no local model to load."""
+    # _EMBEDDINGS_WARM is set to True at module level so /readyz stays green
+    # without triggering any heavyweight model download.
+    pass
 
 
-def _get_embeddings() -> FastEmbedEmbeddings:
-    global _EMBEDDINGS, _EMBEDDINGS_WARM
+def _get_embeddings():
+    """Return a Google Generative AI embeddings client (singleton)."""
+    global _EMBEDDINGS
     if _EMBEDDINGS is not None:
         return _EMBEDDINGS
     with _EMBEDDINGS_LOCK:
         if _EMBEDDINGS is None:
-            _EMBEDDINGS = FastEmbedEmbeddings(model_name=_EMBED_MODEL)
-            _EMBEDDINGS_WARM = True
+            from langchain_google_genai import GoogleGenerativeAIEmbeddings
+            _EMBEDDINGS = GoogleGenerativeAIEmbeddings(model=_EMBED_MODEL)
         return _EMBEDDINGS
 
 
