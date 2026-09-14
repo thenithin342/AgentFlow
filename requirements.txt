@@ -1,33 +1,33 @@
 # Orchestration — LangGraph 1.x APIs (interrupt, Command, AsyncSqliteSaver)
-langgraph>=1.0.0,<2.0.0
-langchain>=0.3.0
-langchain-core>=0.3.0
-langchain-community>=0.3.0
+langgraph>=1.2.11,<2.0.0
+langchain>=1.4.0
+langchain-core>=1.6.2
+langchain-community>=0.4.2
 
 # LLM providers
-langchain-groq>=0.2.0
+langchain-groq>=1.1.3
 groq>=0.9.0                    # direct Groq client (groq.RateLimitError used in conftest)
-langchain-google-genai>=2.0.0
+langchain-google-genai>=4.4.0
 tiktoken>=0.7.0          # token counting for TokenBudgetWrapper (llm.py)
 
 # Tools
-langchain-tavily>=0.1.0
+langchain-tavily>=0.2.18
 
 # RAG — use fastembed (ONNX-based, ~80MB) instead of sentence-transformers
 # (which pulls PyTorch ~300MB and OOMs on Render/free-tier 512MB instances).
 faiss-cpu>=1.8.0
 fastembed>=0.3.0
 pypdf>=4.1.0
-langchain-text-splitters>=0.3.0  # RecursiveCharacterTextSplitter in rag/ingest.py
+langchain-text-splitters>=1.1.2  # RecursiveCharacterTextSplitter in rag/ingest.py
 
 # Vector store — Qdrant (optional; required when QDRANT_URL is set)
 # Enables multi-replica / horizontally-scalable vector search for RAG + LTM.
 qdrant-client>=1.9.0
-langchain-qdrant>=0.1.3
+langchain-qdrant>=1.1.0
 
 # Persistence
-langgraph-checkpoint-sqlite>=2.0.0
-langgraph-checkpoint-postgres>=2.0.0
+langgraph-checkpoint-sqlite>=3.1.1
+langgraph-checkpoint-postgres>=3.1.2
 asyncpg>=0.29.0
 psycopg[binary]>=3.1.0
 
