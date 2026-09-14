@@ -42,6 +42,64 @@ from backend.graph import build_graph
 from backend.rag.ingest import INDEX_ROOT
 from backend.settings import get_settings
 
+
+# ---------------------------------------------------------------------------
+# Fake embeddings — avoids GOOGLE_API_KEY requirement in CI
+# ---------------------------------------------------------------------------
+# GoogleGenerativeAIEmbeddings validates the API key at instantiation time.
+# CI has no key, so we replace _get_embeddings() in both ingest.py and ltm.py
+# with a deterministic fake that returns 768-dim vectors (matching
+# text-embedding-004) without any network call.  The fake is seeded from the
+# text so that identical strings always get identical vectors, which keeps
+# FAISS similarity searches sensible in tests.
+#
+# This fixture is session-scoped and autouse=True so it silently applies to
+# ALL tests — no per-test annotation needed.
+
+class _DeterministicFakeEmbeddings:
+    """Produce 768-dim float vectors deterministically from text content."""
+
+    def _vec(self, text: str):
+        import hashlib, struct
+        digest = hashlib.sha256(text.encode()).digest()
+        # Repeat the 32-byte digest to fill 768 floats (each float = 4 bytes)
+        raw = (digest * (768 * 4 // len(digest) + 1))[: 768 * 4]
+        floats = list(struct.unpack_from(f"{768}f", raw))
+        # Normalise to unit length so cosine similarity works correctly.
+        norm = sum(v * v for v in floats) ** 0.5 or 1.0
+        return [v / norm for v in floats]
+
+    def embed_documents(self, texts):
+        return [self._vec(t) for t in texts]
+
+    def embed_query(self, text):
+        return self._vec(text)
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _fake_embeddings_for_ci():
+    """Patch _get_embeddings in ingest and ltm so CI never needs GOOGLE_API_KEY."""
+    import backend.rag.ingest as _ingest
+    import backend.memory.ltm as _ltm
+
+    fake = _DeterministicFakeEmbeddings()
+
+    original_ingest = _ingest._get_embeddings
+    original_ltm_getter = _ltm._get_embeddings
+
+    def _fake():
+        return fake
+
+    _ingest._get_embeddings = _fake
+    _ltm._get_embeddings = _fake
+
+    yield
+
+    _ingest._get_embeddings = original_ingest
+    _ltm._get_embeddings = original_ltm_getter
+
+
+
 # --- Auth fixture: shared by every API test ------------------------------
 #
 # The auth layer reads `data/users.json` from `settings.data_dir`. We

@@ -775,17 +775,35 @@ function ChatApp({ currentUser, onLogout }) {
     // either await resolves, discard the stale response.
     const myLoadGen = ++loadGenRef.current;
 
-    try {
-      const [histRes, blogRes] = await Promise.all([
+    // Helper: fetch history with one automatic retry after waking the backend.
+    // Uses Promise.allSettled so a blog fetch failure never cancels history.
+    const fetchWithRetry = async () => {
+      const [histResult, blogResult] = await Promise.allSettled([
         apiFetch(`/threads/${id}/history`),
         apiFetch(`/threads/${id}/blog`),
       ]);
+      // If history failed with a network error, try waking the backend once.
+      if (histResult.status === "rejected" ||
+          (histResult.status === "fulfilled" && !histResult.value.ok && histResult.value.status === 0)) {
+        // Backend might be cold-starting — wait for it then retry once.
+        await waitForBackend(null);
+        const retried = await Promise.allSettled([
+          apiFetch(`/threads/${id}/history`),
+          apiFetch(`/threads/${id}/blog`),
+        ]);
+        return retried;
+      }
+      return [histResult, blogResult];
+    };
+
+    try {
+      const [histResult, blogResult] = await fetchWithRetry();
       if (myLoadGen !== loadGenRef.current) return;
 
       // ── Blog output ──────────────────────────────────────────────────────
-      if (blogRes.ok) {
+      if (blogResult.status === "fulfilled" && blogResult.value.ok) {
         try {
-          const blogData = await blogRes.json();
+          const blogData = await blogResult.value.json();
           if (myLoadGen !== loadGenRef.current) return;
           if (blogData?.blog_output) {
             setBlogOutput(blogData.blog_output);
@@ -795,6 +813,12 @@ function ChatApp({ currentUser, onLogout }) {
       }
 
       // ── Chat history ─────────────────────────────────────────────────────
+      if (histResult.status === "rejected") {
+        setMessages([]);
+        showError(histResult.reason?.message || "Failed to load thread history");
+        return;
+      }
+      const histRes = histResult.value;
       if (!histRes.ok) {
         setMessages([]);
         showError(`Failed to load thread history (${histRes.status})`);
