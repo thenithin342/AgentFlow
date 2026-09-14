@@ -217,11 +217,32 @@ Because AgentFlow writes to local files (`agentflow.db` and `ltm_indexes`), **yo
 
 **On Render:**
 1. Create a new **Web Service** connected to your repo.
+   *Connect it through the **Render GitHub App**, not by pasting the public repo URL — a service created from a public URL can only ever be deployed manually (see "Auto-deploys never trigger" below).*
 2. Set the Build Command: `pip install -r requirements.txt`
 3. Set the Start Command: `uvicorn backend.main:app --host 0.0.0.0 --port 10000`
 4. **Important**: Go to the "Disks" section and add a disk mounted at `/opt/render/project/src/data`.
 5. You will need to update your backend code to save the `.db` and `ltm_indexes` into that specific folder if running in production.
 6. Add your Environment Variables (see "Auth & secrets" below).
+
+#### Auto-deploys never trigger (you have to deploy manually every push)
+
+Render only fires an automatic deploy when the service is **connected through the Render GitHub App**. Work through these causes in order — they are all silent, so the service's **Events** page (not the Settings toggle) is the source of truth:
+
+| Cause | How to confirm | Fix |
+| --- | --- | --- |
+| Service was created from the **public repo URL** instead of the GitHub App | Settings → *Repository* shows a plain `github.com/...` URL; **Events** logs nothing at all on push | Recreate the service via the App (re-attach the disk), **or** deploy from CI (next section) |
+| Auto-deploys were disabled by a past **"Deploy a specific commit"** — the dashboard and a hook called with `?ref=<sha>` both turn them off | Events page shows an auto-deploy-disabled entry | Settings → Auto-Deploy → *On Commit* (and never pass `?ref=` to a hook) |
+| Commit message contains a **skip phrase** (`[skip render]`, `[render skip]`, `[skip deploy]`, `[skip cd]`) | Events page shows *Auto-deploy skipped* for that commit | Remove the phrase and re-push |
+| **Build filters** are set to paths the commit doesn't touch | Events page shows the auto-deploy was filtered out | Settings → Build Filters |
+| Auto-Deploy is set to **After CI Checks Pass** but no checks are detected for the commit | GitHub Actions has no run for that SHA | Use *On Commit*, or make the workflow run on `push` to the linked branch |
+| Service is **Blueprint-managed** and the blueprint's auto-deploy value is authoritative | Events page shows the blueprint sync | `render.yaml` sets `autoDeployTrigger: commit` explicitly (already done) |
+
+**Deploy from CI (works even for a public-URL service).** `.github/workflows/ci.yml` has a `deploy` job that calls a Render Deploy Hook once the backend and frontend jobs pass:
+
+1. Render Dashboard → your service → **Settings → Deploy Hook** → copy the URL.
+2. GitHub repo → **Settings → Secrets and variables → Actions → New repository secret**, name it `RENDER_DEPLOY_HOOK_URL`.
+
+The job is dormant until that secret exists, so it is safe to leave in place. If native auto-deploys later start working, delete the secret — otherwise every push deploys twice.
 
 ### 3. Auth & secrets
 The frontend shows a login screen that posts to `POST /auth/login` and stores the resulting JWT in `localStorage`. Every API call then sends `Authorization: Bearer <jwt>`. The backend's `backend/auth.py:require_user` enforces it; the `/auth/login` endpoint itself is the only public path (see `PUBLIC_PATHS` in `backend/main.py`).

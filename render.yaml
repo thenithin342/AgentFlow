@@ -18,6 +18,16 @@ services:
     region: oregon
     plan: starter   # free plan does not support persistent disks
 
+    # Deploy on every push to the linked branch.
+    # Set explicitly (rather than relying on the default) because a Blueprint
+    # sync is authoritative: for an existing service Render *retains* whatever
+    # auto-deploy value is already set, so a service whose auto-deploys were
+    # disabled — e.g. by a past "Deploy a specific commit", which silently
+    # turns them off — would keep staying off no matter what the dashboard
+    # toggle appears to say.
+    # commit = deploy on each commit | checksPass = only after CI passes | off
+    autoDeployTrigger: commit
+
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn backend.main:app --host 0.0.0.0 --port $PORT --workers 1 --timeout-keep-alive 120
 
