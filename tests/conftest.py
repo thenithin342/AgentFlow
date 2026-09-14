@@ -57,17 +57,24 @@ from backend.settings import get_settings
 # ALL tests — no per-test annotation needed.
 
 class _DeterministicFakeEmbeddings:
-    """Produce 768-dim float vectors deterministically from text content."""
+    """Produce 768-dim float vectors deterministically from text content.
+
+    Uses a numpy RandomState seeded from the SHA-256 of the text so:
+      - identical inputs → identical vectors (deterministic for FAISS tests)
+      - no NaN/Inf (numpy randn never produces those)
+      - unit-length normalised so cosine similarity works correctly
+    """
 
     def _vec(self, text: str):
-        import hashlib, struct
-        digest = hashlib.sha256(text.encode()).digest()
-        # Repeat the 32-byte digest to fill 768 floats (each float = 4 bytes)
-        raw = (digest * (768 * 4 // len(digest) + 1))[: 768 * 4]
-        floats = list(struct.unpack_from(f"{768}f", raw))
-        # Normalise to unit length so cosine similarity works correctly.
-        norm = sum(v * v for v in floats) ** 0.5 or 1.0
-        return [v / norm for v in floats]
+        import hashlib
+        import numpy as np
+
+        # Derive a 32-bit seed from the first 4 bytes of SHA-256.
+        seed = int.from_bytes(hashlib.sha256(text.encode()).digest()[:4], "big")
+        rng = np.random.RandomState(seed)
+        v = rng.randn(768).astype(np.float32)
+        norm = float(np.linalg.norm(v)) or 1.0
+        return (v / norm).tolist()
 
     def embed_documents(self, texts):
         return [self._vec(t) for t in texts]
