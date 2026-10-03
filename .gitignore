@@ -50,3 +50,5 @@ agentflow.egg-info/
 # Railway config (not used — deployment targets are Render + Vercel only)
 railway.toml
 nixpacks.toml
+# Eval run reports (EVAL_PLAN.md Phase 2+); datasets and harness stay tracked.
+evals/results/

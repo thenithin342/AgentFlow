@@ -1,0 +1,305 @@
+%PDF-1.3
+%‚„œ”
+1 0 obj
+<<
+/Producer (pypdf)
+>>
+endobj
+2 0 obj
+<<
+/Type /Pages
+/Count 10
+/Kids [ 4 0 R 6 0 R 8 0 R 10 0 R 12 0 R 14 0 R 16 0 R 18 0 R 20 0 R 22 0 R ]
+>>
+endobj
+3 0 obj
+<<
+/Type /Catalog
+/Pages 2 0 R
+>>
+endobj
+4 0 obj
+<<
+/Type /Page
+/Resources <<
+/Font <<
+/F1 5 0 R
+>>
+>>
+/MediaBox [ 0.0 0.0 612 792 ]
+/Parent 2 0 R
+/Contents <<
+/Length 111
+>>
+stream
+BT /F1 12 Tf 50 750 Td (LangGraph is a library for building stateful multi-agent applications as graphs.) Tj ET
+endstream
+>>
+endobj
+5 0 obj
+<<
+/Type /Font
+/Subtype /Type1
+/BaseFont /Helvetica
+>>
+endobj
+6 0 obj
+<<
+/Type /Page
+/Resources <<
+/Font <<
+/F1 7 0 R
+>>
+>>
+/MediaBox [ 0.0 0.0 612 792 ]
+/Parent 2 0 R
+/Contents <<
+/Length 135
+>>
+stream
+BT /F1 12 Tf 50 750 Td (A LangGraph graph is composed of nodes, which are Python functions, and edges, which define transitions.) Tj ET
+endstream
+>>
+endobj
+7 0 obj
+<<
+/Type /Font
+/Subtype /Type1
+/BaseFont /Helvetica
+>>
+endobj
+8 0 obj
+<<
+/Type /Page
+/Resources <<
+/Font <<
+/F1 9 0 R
+>>
+>>
+/MediaBox [ 0.0 0.0 612 792 ]
+/Parent 2 0 R
+/Contents <<
+/Length 104
+>>
+stream
+BT /F1 12 Tf 50 750 Td (Conditional edges route execution dynamically based on the current state.) Tj ET
+endstream
+>>
+endobj
+9 0 obj
+<<
+/Type /Font
+/Subtype /Type1
+/BaseFont /Helvetica
+>>
+endobj
+10 0 obj
+<<
+/Type /Page
+/Resources <<
+/Font <<
+/F1 11 0 R
+>>
+>>
+/MediaBox [ 0.0 0.0 612 792 ]
+/Parent 2 0 R
+/Contents <<
+/Length 125
+>>
+stream
+BT /F1 12 Tf 50 750 Td (The add_messages reducer appends new messages to conversation state instead of overwriting it.) Tj ET
+endstream
+>>
+endobj
+11 0 obj
+<<
+/Type /Font
+/Subtype /Type1
+/BaseFont /Helvetica
+>>
+endobj
+12 0 obj
+<<
+/Type /Page
+/Resources <<
+/Font <<
+/F1 13 0 R
+>>
+>>
+/MediaBox [ 0.0 0.0 612 792 ]
+/Parent 2 0 R
+/Contents <<
+/Length 119
+>>
+stream
+BT /F1 12 Tf 50 750 Td (A checkpointer such as SqliteSaver persists graph state across runs, keyed by thread_id.) Tj ET
+endstream
+>>
+endobj
+13 0 obj
+<<
+/Type /Font
+/Subtype /Type1
+/BaseFont /Helvetica
+>>
+endobj
+14 0 obj
+<<
+/Type /Page
+/Resources <<
+/Font <<
+/F1 15 0 R
+>>
+>>
+/MediaBox [ 0.0 0.0 612 792 ]
+/Parent 2 0 R
+/Contents <<
+/Length 101
+>>
+stream
+BT /F1 12 Tf 50 750 Td (The interrupt function pauses graph execution to wait for human input.) Tj ET
+endstream
+>>
+endobj
+15 0 obj
+<<
+/Type /Font
+/Subtype /Type1
+/BaseFont /Helvetica
+>>
+endobj
+16 0 obj
+<<
+/Type /Page
+/Resources <<
+/Font <<
+/F1 17 0 R
+>>
+>>
+/MediaBox [ 0.0 0.0 612 792 ]
+/Parent 2 0 R
+/Contents <<
+/Length 116
+>>
+stream
+BT /F1 12 Tf 50 750 Td (A Command object with a resume value restarts a paused graph with the human decision.) Tj ET
+endstream
+>>
+endobj
+17 0 obj
+<<
+/Type /Font
+/Subtype /Type1
+/BaseFont /Helvetica
+>>
+endobj
+18 0 obj
+<<
+/Type /Page
+/Resources <<
+/Font <<
+/F1 19 0 R
+>>
+>>
+/MediaBox [ 0.0 0.0 612 792 ]
+/Parent 2 0 R
+/Contents <<
+/Length 124
+>>
+stream
+BT /F1 12 Tf 50 750 Td (The create_react_agent helper wraps a language model in a reason-and-act loop bound to tools.) Tj ET
+endstream
+>>
+endobj
+19 0 obj
+<<
+/Type /Font
+/Subtype /Type1
+/BaseFont /Helvetica
+>>
+endobj
+20 0 obj
+<<
+/Type /Page
+/Resources <<
+/Font <<
+/F1 21 0 R
+>>
+>>
+/MediaBox [ 0.0 0.0 612 792 ]
+/Parent 2 0 R
+/Contents <<
+/Length 109
+>>
+stream
+BT /F1 12 Tf 50 750 Td (Subgraphs let teams compose smaller graphs into a larger multi-agent workflow.) Tj ET
+endstream
+>>
+endobj
+21 0 obj
+<<
+/Type /Font
+/Subtype /Type1
+/BaseFont /Helvetica
+>>
+endobj
+22 0 obj
+<<
+/Type /Page
+/Resources <<
+/Font <<
+/F1 23 0 R
+>>
+>>
+/MediaBox [ 0.0 0.0 612 792 ]
+/Parent 2 0 R
+/Contents <<
+/Length 117
+>>
+stream
+BT /F1 12 Tf 50 750 Td (LangGraph supports streaming so tokens reach the user interface as they are generated.) Tj ET
+endstream
+>>
+endobj
+23 0 obj
+<<
+/Type /Font
+/Subtype /Type1
+/BaseFont /Helvetica
+>>
+endobj
+xref
+0 24
+0000000000 65535 f 
+0000000015 00000 n 
+0000000054 00000 n 
+0000000175 00000 n 
+0000000224 00000 n 
+0000000497 00000 n 
+0000000567 00000 n 
+0000000864 00000 n 
+0000000934 00000 n 
+0000001200 00000 n 
+0000001270 00000 n 
+0000001559 00000 n 
+0000001630 00000 n 
+0000001913 00000 n 
+0000001984 00000 n 
+0000002249 00000 n 
+0000002320 00000 n 
+0000002600 00000 n 
+0000002671 00000 n 
+0000002959 00000 n 
+0000003030 00000 n 
+0000003303 00000 n 
+0000003374 00000 n 
+0000003655 00000 n 
+trailer
+<<
+/Size 24
+/Root 3 0 R
+/Info 1 0 R
+>>
+startxref
+3726
+%%EOF

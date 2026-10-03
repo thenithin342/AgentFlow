@@ -214,6 +214,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 yield
             finally:
                 logger.info("shutting_down", backend="sqlite")
+                # aiosqlite's `async with` context manager only COMMITS on
+                # exit — it does not close the connection. Close it explicitly
+                # so GC at teardown cannot raise a ResourceWarning (pytest's
+                # unraisable-exception hook would surface it as a test failure).
+                await conn.close()
 
 
 # ---------------------------------------------------------------------------

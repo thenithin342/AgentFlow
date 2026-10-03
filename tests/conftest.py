@@ -158,13 +158,17 @@ async def auth_headers(tmp_path, monkeypatch):
 
     # Bootstrap the users table and insert the test account.
     auth_mod.init_user_table_sync(test_db)
-    with sqlite3.connect(test_db, timeout=10) as conn:
+    conn = sqlite3.connect(test_db, timeout=10)
+    try:
         conn.execute(
             "INSERT OR REPLACE INTO users (username, password_hash, created_at) "
             "VALUES (?, ?, ?)",
             ("tester", auth_mod.hash_password("test-pw"), 0.0),
         )
         conn.commit()
+    finally:
+        # sqlite3's `with` context manager only commits — it never closes.
+        conn.close()
 
     token = auth_mod.issue_token(settings, "tester")
     return {"Authorization": f"Bearer {token}"}
@@ -294,10 +298,12 @@ def _close_old_default_graph() -> None:
     and reset the singleton so the next access rebuilds it.
 
     The compiled graph holds a live `sqlite3.Connection` (via the
-    SqliteSaver checkpointer). Nilling `_default_graph` alone drops the
-    Python reference, but the OS file handle lingers until the next GC
-    cycle — and on Windows the next test session cannot TRUNCATE a file
-    still held open, which surfaces as `database is locked`.
+    SqliteSaver checkpointer). Current langgraph's CompiledStateGraph exposes
+    no `.close()` — see the explicit `SqliteSaver.conn` close below. Nilling
+    `_default_graph` alone drops the Python reference, but the OS file handle
+    lingers until the next GC cycle — and on Windows the next test session
+    cannot TRUNCATE a file still held open, which surfaces as
+    `database is locked`.
 
     Defensive on `.close()`: not every CompiledStateGraph exposes one
     (older LangGraph versions, mocks in unit tests). `getattr` keeps
@@ -311,6 +317,18 @@ def _close_old_default_graph() -> None:
                 close()
             except Exception:  # noqa: BLE001 — best-effort
                 pass
+    # Explicit close of the checkpointer's live sqlite connection. GC does
+    # NOT do this for us — sqlite3 connections are closed by the interpreter,
+    # not by CPython's cyclic GC deterministically, and the unraisable-hook
+    # failure mode is version-dependent. Closing here keeps suite exit codes
+    # deterministic.
+    checkpointer = getattr(graph_obj, "checkpointer", None)
+    raw_conn = getattr(checkpointer, "conn", None)
+    if isinstance(raw_conn, sqlite3.Connection):
+        try:
+            raw_conn.close()
+        except Exception:  # noqa: BLE001 — best-effort (already closed)
+            pass
     build_graph._default_graph = None  # force lazy rebuild on next access
 
 

@@ -1,0 +1,44 @@
+{"expected": "research", "input": "What are the latest AI research papers?", "kind": "router", "reason": "Prompt few-shot example; asks for fresh external papers -> research."}
+{"expected": "research", "input": "Find me recent news about quantum computing breakthroughs.", "kind": "router", "reason": "Prompt few-shot example; recent news needs web search -> research."}
+{"expected": "research", "input": "Search for the current population of Tokyo.", "kind": "router", "reason": "Prompt few-shot example; explicit search for a real-world fact -> research."}
+{"expected": "research", "input": "Look up the latest iPhone release date and specs.", "kind": "router", "reason": "Prompt few-shot example; product lookup about a real-world entity -> research."}
+{"expected": "research", "input": "What is the capital of France?", "kind": "router", "reason": "Real-world entity lookup; existing E2E suite treats it as a research turn (SOURCES expected)."}
+{"expected": "research", "input": "What are the latest developments in fusion energy?", "kind": "router", "reason": "PRD use case 1; current-information question needing web search -> research."}
+{"expected": "research", "input": "Find me the current price of Bitcoin.", "kind": "router", "reason": "'Find me' + fast-moving real-world fact -> research."}
+{"expected": "research", "input": "Search for recent papers on protein folding.", "kind": "router", "reason": "Latest-papers lookup, mirrors the prompt research examples -> research."}
+{"expected": "research", "input": "What is quantum entanglement?", "kind": "router", "reason": "'What is X' about a real-world concept; prompt lists 'what is X' under research."}
+{"expected": "research", "input": "Who won the latest Nobel Prize in Physics?", "kind": "router", "reason": "Current event requiring fresh external information -> research."}
+{"expected": "research", "input": "Look up the score from yesterday's championship final.", "kind": "router", "reason": "Recent-event lookup that needs the live web -> research."}
+{"expected": "analysis", "input": "Summarize and compare chapter 2 vs chapter 4.", "kind": "router", "reason": "Prompt few-shot example; comparison over provided content -> analysis."}
+{"expected": "analysis", "input": "Calculate the compound interest on $5000 at 4% for 10 years.", "kind": "router", "reason": "Prompt few-shot example; pure computation -> analysis."}
+{"expected": "analysis", "input": "Compare the revenue growth of Apple vs Microsoft over the last 5 years.", "kind": "router", "reason": "Prompt few-shot example labels this analysis even though it names real-world entities."}
+{"expected": "analysis", "input": "Analyze the sentiment of this customer review.", "kind": "router", "reason": "Prompt few-shot example; reasoning over provided text -> analysis."}
+{"expected": "analysis", "input": "What is this document about?", "kind": "router", "reason": "Prompt explicitly routes uploaded-document questions to analysis."}
+{"expected": "analysis", "input": "Summarize the file I uploaded.", "kind": "router", "reason": "Prompt few-shot example; summary of an uploaded file -> analysis."}
+{"expected": "analysis", "input": "What does the document say about refunds?", "kind": "router", "reason": "Prompt few-shot pattern 'what does the file say about X' -> analysis."}
+{"expected": "analysis", "input": "Give me key points from the PDF.", "kind": "router", "reason": "Prompt few-shot example; extraction from an uploaded PDF -> analysis."}
+{"expected": "analysis", "input": "What is in the uploaded file?", "kind": "router", "reason": "Prompt few-shot example; asks about uploaded content -> analysis."}
+{"expected": "analysis", "input": "Compute total revenue across all Northwind regions for 2024.", "kind": "router", "reason": "Computation over provided data; no fresh web facts needed -> analysis."}
+{"expected": "analysis", "input": "Compare Northwind Beverages vs Confections revenue and explain the gap.", "kind": "router", "reason": "Comparison + reasoning over provided figures -> analysis."}
+{"expected": "blog", "input": "Write a blog post about the future of AI.", "kind": "router", "reason": "Prompt few-shot example; explicit blog trigger -> blog."}
+{"expected": "blog", "input": "Draft an article on climate change solutions.", "kind": "router", "reason": "Prompt few-shot example; 'draft an article' trigger -> blog."}
+{"expected": "blog", "input": "Create a blog post explaining how LangGraph works.", "kind": "router", "reason": "Prompt few-shot example; 'create a blog' trigger -> blog."}
+{"expected": "blog", "input": "Write up an article about Python for beginners.", "kind": "router", "reason": "Prompt few-shot example; 'write up an article' trigger -> blog."}
+{"expected": "blog", "input": "I need a blog post about healthy eating habits.", "kind": "router", "reason": "Prompt few-shot example; explicit blog request -> blog."}
+{"expected": "blog", "input": "Write about remote work productivity for my blog.", "kind": "router", "reason": "Prompt trigger 'write about X for my blog' -> blog."}
+{"expected": "blog", "input": "Create a blog explaining retrieval-augmented generation.", "kind": "router", "reason": "'Create a blog' trigger on a technical topic -> blog."}
+{"expected": "blog", "input": "Draft an article about urban gardening for beginners.", "kind": "router", "reason": "'Draft an article' trigger -> blog."}
+{"expected": "blog", "input": "Write a blog post comparing SQL and NoSQL databases.", "kind": "router", "reason": "Long-form written content request with blog trigger words -> blog."}
+{"expected": "blog", "input": "Write an article about electric vehicles.", "kind": "router", "reason": "Prompt trigger 'article about' -> blog."}
+{"expected": "blog", "input": "Create a blog post on getting started with LangGraph.", "kind": "router", "reason": "'Create a blog post' trigger -> blog."}
+{"expected": "chat", "input": "Thanks, can you shorten that?", "kind": "router", "reason": "Prompt few-shot example; follow-up rewrite needing no tool -> chat."}
+{"expected": "chat", "input": "Hi, how are you?", "kind": "router", "reason": "Prompt few-shot example; small talk -> chat."}
+{"expected": "chat", "input": "Can you rephrase that in a more formal tone?", "kind": "router", "reason": "Prompt few-shot example; rephrasing follow-up -> chat."}
+{"expected": "chat", "input": "Got it, please continue.", "kind": "router", "reason": "Prompt few-shot example; conversational continuation -> chat."}
+{"expected": "chat", "input": "Thanks, that really helps.", "kind": "router", "reason": "Thanking; no tool needed -> chat."}
+{"expected": "chat", "input": "Can you explain that in simpler terms?", "kind": "router", "reason": "Follow-up clarification over content already in the conversation -> chat."}
+{"expected": "chat", "input": "What do you mean by that?", "kind": "router", "reason": "Clarification follow-up needing no tool -> chat."}
+{"expected": "chat", "input": "Hello!", "kind": "router", "reason": "Pure greeting / small talk -> chat."}
+{"expected": "chat", "input": "Please rewrite that paragraph to be shorter.", "kind": "router", "reason": "Rewrite request; prompt lists shorten/rewrite as chat."}
+{"expected": "chat", "input": "Okay, go on.", "kind": "router", "reason": "Conversational continuation with no new information need -> chat."}
+{"expected": "chat", "input": "Thanks for the help!", "kind": "router", "reason": "Closing thanks; no tool needed -> chat."}

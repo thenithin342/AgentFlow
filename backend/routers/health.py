@@ -77,9 +77,13 @@ async def readyz(request: Request) -> JSONResponse:
                 _pg_engine = None
                 raise
         else:
-            async with aiosqlite.connect(settings.checkpoint_db_path, timeout=2.0) as db:
+            db = await aiosqlite.connect(settings.checkpoint_db_path, timeout=2.0)
+            try:
                 await db.execute("SELECT 1")
                 db_ok = True
+            finally:
+                # aiosqlite's `async with` only commits — it never closes.
+                await db.close()
     except Exception:
         logger.exception("readyz_db_failed")
     timings["db"] = round(_time.perf_counter() - t1, 4)

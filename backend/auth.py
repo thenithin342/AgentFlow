@@ -100,9 +100,13 @@ CREATE TABLE IF NOT EXISTS users (
 def init_user_table_sync(db_path: str) -> None:
     """Create the users table synchronously (called from lifespan before async loop)."""
     import sqlite3
-    with sqlite3.connect(db_path, timeout=10) as conn:
+    conn = sqlite3.connect(db_path, timeout=10)
+    try:
         conn.execute(_CREATE_USERS_TABLE)
         conn.commit()
+    finally:
+        # sqlite3's `with` context manager only commits — it never closes.
+        conn.close()
 
 
 async def init_user_table_async(conn) -> None:
@@ -177,12 +181,15 @@ async def db_update_password(conn, username: str, new_hash: str) -> bool:
 
 def _sync_get_user(db_path: str, username: str) -> UserRecord | None:
     import sqlite3
-    with sqlite3.connect(db_path, timeout=10) as conn:
+    conn = sqlite3.connect(db_path, timeout=10)
+    try:
         cur = conn.execute(
             "SELECT username, password_hash, created_at FROM users WHERE username = ?",
             (username,),
         )
         row = cur.fetchone()
+    finally:
+        conn.close()
     if row is None:
         return None
     return UserRecord(username=row[0], password_hash=row[1], created_at=row[2])
@@ -190,19 +197,25 @@ def _sync_get_user(db_path: str, username: str) -> UserRecord | None:
 
 def _sync_count_users(db_path: str) -> int:
     import sqlite3
-    with sqlite3.connect(db_path, timeout=10) as conn:
+    conn = sqlite3.connect(db_path, timeout=10)
+    try:
         cur = conn.execute("SELECT COUNT(*) FROM users")
         return cur.fetchone()[0]
+    finally:
+        conn.close()
 
 
 def _sync_upsert_user(db_path: str, rec: UserRecord) -> None:
     import sqlite3
-    with sqlite3.connect(db_path, timeout=10) as conn:
+    conn = sqlite3.connect(db_path, timeout=10)
+    try:
         conn.execute(
             "INSERT OR REPLACE INTO users (username, password_hash, created_at) VALUES (?, ?, ?)",
             (rec.username, rec.password_hash, rec.created_at),
         )
         conn.commit()
+    finally:
+        conn.close()
 
 
 # ---------------------------------------------------------------------------
@@ -233,7 +246,8 @@ def _migrate_json_to_db(settings: Settings) -> None:
 
     migrated = 0
     import sqlite3
-    with sqlite3.connect(db_path, timeout=10) as conn:
+    conn = sqlite3.connect(db_path, timeout=10)
+    try:
         for username, data in raw.items():
             try:
                 safe = _validate_username(username)
@@ -246,6 +260,8 @@ def _migrate_json_to_db(settings: Settings) -> None:
             )
             migrated += 1
         conn.commit()
+    finally:
+        conn.close()
 
     logger.info("[auth] Migrated %d user(s) from users.json → SQLite users table", migrated)
 

@@ -1,0 +1,27 @@
+# Isolated Tier-B (real-model batch) eval dependencies.
+# Install with: pip install -r requirements-eval.txt
+# Kept separate from requirements.txt / requirements-dev.txt so main CI stays untouched.
+#
+# DECISION (2026-09-14): deepEval is the Tier-B judge framework (see EVAL_PLAN.md section 6).
+#   - First-class G-Eval + full RAG triad (contextual recall/precision, faithfulness,
+#     answer relevancy); pytest-style ergonomics (assert_test / deepeval test run).
+#   - Brings its own LLM layer (openai SDK; no langchain, no litellm) -> judges run on
+#     Groq via an OpenAI-compatible endpoint (no OPENAI_API_KEY needed); Gemini fallback.
+#     Verified against PyPI: deepeval 4.2.2 has ZERO langchain/litellm dependencies.
+#
+# RAGAS REJECTED: ragas>=0.2,<1 (0.4.3) installs but `import ragas` FAILS against
+# this stack's langchain_community 0.4.2 / langchain_core 1.4.8:
+#   ragas/llms/base.py: `from langchain_community.chat_models.vertexai import
+#   ChatVertexAI` -> ModuleNotFoundError (module removed in the 0.4.x sunset line).
+# Do NOT loosen existing pins to work around it.
+#
+# UNVERIFIED until the Phase 2 spike: fresh venv, install this file, score ~3 rows
+# from rag_qa/generator/application/safety datasets with Groq as the judge, confirm
+# no conflict with the tenacity 9.1.4 / rich 15.0.0 pins. Fallback if the spike
+# fails: hand-rolled judges in evals/harness/llm_judge.py (no new dependencies).
+#
+# Install footprint (verified): deepeval 4.2.x caps rich<15.0.0 (downgrades rich 15.0.0
+# in this project's venv) and adds pytest-xdist / pytest-rerunfailures / pytest-repeat.
+# A FRESH venv is REQUIRED for Tier-B runs - never install this file into the main venv.
+
+deepeval>=4.2,<5

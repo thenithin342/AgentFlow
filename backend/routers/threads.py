@@ -230,12 +230,16 @@ async def delete_thread(
                         await conn.execute("DELETE FROM checkpoint_writes WHERE thread_id = $1", scoped) # type: ignore
                         deleted_checkpoints = 1
         else:
-            async with aiosqlite.connect(settings.checkpoint_db_path, timeout=5.0) as db:
+            db = await aiosqlite.connect(settings.checkpoint_db_path, timeout=5.0)
+            try:
                 cursor = await db.execute(
                     "DELETE FROM checkpoints WHERE thread_id = ?", (scoped,)
                 )
                 deleted_checkpoints = cursor.rowcount
                 await db.commit()
+            finally:
+                # aiosqlite's `async with` only commits — it never closes.
+                await db.close()
     except Exception:
         logger.exception("delete_thread_db_failed", thread_id=scoped)
         raise HTTPException(status_code=500, detail="internal server error")
