@@ -154,14 +154,14 @@ evals/
 
 ## 6. Phases
 
-### Phase 0 — Foundations (complete — audited 2026-09-14: 8 JSONL datasets / 121 rows, corpus grounded, validator + ruff green)
+### Phase 0 — Foundations (complete — audited 2026-09-14: 8 JSONL datasets / 121 rows, corpus grounded, validator + ruff green; datasets expanded 2026-10-03: rag_qa 25 rows, generator 20 rows, application 20 rows)
 
 - `evals/` package (ruff-checked in CI): `datasets/`, `harness/`, `online/`, `results/`, `config.yaml`, `README.md`, `results/` gitignored.
 - Golden datasets, one per metric family (JSONL above).
 - Golden retrieval corpus: extend `tests/sample.pdf` with 2–3 curated docs so `retriever.jsonl` has stable, labeled chunks.
 - Dependency decision (2026-09-14): **adopt DeepEval (`deepeval>=4.2,<5`, isolated in `requirements-eval.txt`)** for the offline Tier-B judge math — first-class G-Eval, full RAG triad (contextual recall/precision, faithfulness, answer relevancy), and pytest-style ergonomics. Judges run on **Groq via an OpenAI-compatible endpoint** (no OpenAI key needed); Gemini as fallback. **RAGAS was rejected**: `ragas 0.4.3` installs but fails `import` against this stack's `langchain_community 0.4.2` / `langchain_core 1.4.8` (`ChatVertexAI` removed in the 0.4.x sunset). **Verified against PyPI (2026-09-14)**: deepeval 4.2.2 has zero langchain/litellm dependencies (own LLM layer over the openai SDK — the exact failure point that killed ragas), and caps `rich<15` + adds pytest-xdist/rerunfailures/repeat → install in a **fresh venv only**, never the project's main venv. **Entry gate for Phase 2**: a spike installs deepeval in a fresh venv and scores ~3 rows from each of rag_qa/generator/application/safety against Groq as judge; if the spike fails, fall back to hand-rolled judge prompts in `harness/llm_judge.py` — `config.yaml` thresholds are identical either way.
 
-### Phase 1 — Offline Tier A (complete — audited 2026-09-15: 21 Tier A tests pass, zero LLM/network, 100% anchor materialization; retriever quality gates deferred to Tier B, see note)
+### Phase 1 — Offline Tier A (complete — audited 2026-09-15: 21 Tier A tests pass, zero LLM/network, 100% anchor materialization; retriever quality gates deferred to Tier B, see note; gaps fixed 2026-10-03: test_router.py formally Tier A marked + 14 new parametrize cases incl. blog label + boundary; 8 new should_compress / escape_untrusted / synthesizer edge-case tests added; CI hardened with explicit tier_a step, ruff covers evals/harness/, coverage floor raised to 55%)
 
 - Retriever (structural gate — corrected at audit): with the deterministic fake embeddings, FAISS top-k ranking is effectively arbitrary (measured mean recall 0.29 / precision 0.08 — randomness, not quality), so **Tier A does NOT gate recall/precision**. Tier A gates: (1) 100% anchor → chunk materialization — every `relevant_text` anchor resolves to exactly one indexed chunk (12/12 rows; 0-hit or ambiguous 2+ hits raise), (2) structural top-k + no-index fallback, (3) materialized chunk IDs written back into `retriever.jsonl` for Tier B reuse. Per-row recall/precision are computed and saved to `evals/results/tier_a_retrieval.json` as informational only. The `config.yaml` 0.85/0.80 gates are enforced in Tier B with real embeddings.
 - Safety deterministic gates: PII regex scanners, protected-string scanners, `<<UNTRUSTED …>>` boundary behavior (`escape_untrusted` cannot be broken by crafted `<<END USER INPUT>>` tokens), scope-refusal phrase detector. Behavioral refusal / masking is Tier B.
@@ -219,7 +219,7 @@ Sized to run within the free-tier quota (~one full run/day).
 - [x] `EVAL_PLAN.md` — this document
 - [x] `evals/` package + `config.yaml` + `README.md` (quota budget table)
 - [x] Golden datasets seed (8 files, 121 rows) + golden retrieval corpus (3 PDFs, `build_corpus.py` deterministic — regenerates every run)
-- [x] Tier A deterministic suite, green in CI, blocks merge (21 tests; zero LLM/network; audited 2026-09-15)
+- [x] Tier A deterministic suite, green in CI, blocks merge (21 base tests + expanded router/format/security edge cases; explicit tier_a CI step; ruff covers evals/; coverage floor 55%; audited 2026-09-15, gaps fixed 2026-10-03)
 - [ ] Tier B batch harness + baselines + reports
 - [ ] DeepEval/G-Eval judge wiring on Groq (OpenAI-compatible endpoint) + Gemini fallback
 - [ ] CI job for Tier A (push/PR) and Tier B (nightly / workflow_dispatch)

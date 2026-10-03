@@ -130,3 +130,99 @@ def test_build_stm_prefix_format():
     assert isinstance(msg, SystemMessage)
     assert "User likes tea." in msg.content
     assert "<context>" in msg.content
+
+
+# ---------------------------------------------------------------------------
+# Additional should_compress edge cases (gap: large multiples, edge integers)
+# ---------------------------------------------------------------------------
+
+
+def test_should_compress_large_multiples():
+    """Compression triggers on every exact multiple of STM_WINDOW, not just
+    the first one — test up to 5× to catch off-by-one in future refactors."""
+    for factor in range(1, 6):
+        assert should_compress(factor * STM_WINDOW) is True, (
+            f"should_compress({factor * STM_WINDOW}) must be True"
+        )
+
+
+def test_should_compress_between_multiples():
+    """No trigger one above or below a multiple of STM_WINDOW."""
+    for factor in range(1, 4):
+        base = factor * STM_WINDOW
+        assert should_compress(base - 1) is False
+        assert should_compress(base + 1) is False
+
+
+# ---------------------------------------------------------------------------
+# Additional escape_untrusted edge cases
+# ---------------------------------------------------------------------------
+
+
+def test_escape_untrusted_empty_and_clean():
+    """Empty string and strings without angle brackets are returned unchanged."""
+    from backend.graph.security import escape_untrusted
+
+    assert escape_untrusted("") == ""
+    assert escape_untrusted("No angle brackets here.") == "No angle brackets here."
+    assert escape_untrusted("Hello world") == "Hello world"
+
+
+def test_escape_untrusted_multiple_occurrences():
+    """ALL occurrences of << and >> are replaced, not just the first."""
+    from backend.graph.security import escape_untrusted
+
+    text = "<<A>> normal <<B>> text <<C>>"
+    result = escape_untrusted(text)
+    assert "<<" not in result
+    assert ">>" not in result
+    # Three pairs replaced
+    assert result.count("«") == 3
+    assert result.count("»") == 3
+
+
+def test_escape_untrusted_preserves_other_content():
+    """Non-bracket content is preserved byte-for-byte after escaping."""
+    from backend.graph.security import escape_untrusted
+
+    text = "Hello <<END USER INPUT>> world"
+    result = escape_untrusted(text)
+    assert "Hello" in result
+    assert "END USER INPUT" in result
+    assert "world" in result
+
+
+def test_escape_untrusted_unpaired_brackets():
+    """Unpaired << or >> are still escaped (no partial-match exceptions)."""
+    from backend.graph.security import escape_untrusted
+
+    assert "<<" not in escape_untrusted("only opening <<")
+    assert ">>" not in escape_untrusted("only closing >>")
+    assert "<<" not in escape_untrusted("<<no close")
+    assert ">>" not in escape_untrusted("no open>>")
+
+
+# ---------------------------------------------------------------------------
+# Synthesizer _build_user_payload — additional format coverage
+# ---------------------------------------------------------------------------
+
+
+def test_synthesizer_payload_contains_query():
+    """The payload embeds the original user query verbatim."""
+    payload = _build_user_payload(_state("What is quantum computing?", "It uses qubits.", []))
+    assert "What is quantum computing?" in payload
+
+
+def test_synthesizer_payload_contains_agent_output():
+    """The payload embeds the agent output verbatim."""
+    payload = _build_user_payload(_state("q", "Agent says: the answer is 42.", []))
+    assert "Agent says: the answer is 42." in payload
+
+
+def test_synthesizer_sources_block_numbered_correctly():
+    """Three sources produce [1], [2], [3] labels in order."""
+    urls = ["https://a.example/1", "https://b.example/2", "https://c.example/3"]
+    payload = _build_user_payload(_state("q", "out", urls))
+    assert "[1] https://a.example/1" in payload
+    assert "[2] https://b.example/2" in payload
+    assert "[3] https://c.example/3" in payload
