@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 HERE = Path(__file__).resolve().parent
-CONFIG_PATH = HERE.parent / "config.yaml"
+CONFIG_PATH = HERE / "config.yaml"
 
 
 def _load_yaml(path: Path) -> dict[str, Any]:

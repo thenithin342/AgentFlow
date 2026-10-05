@@ -251,14 +251,36 @@ def _write_markdown(path: Path, report: dict[str, Any]) -> None:
     if rows:
         lines.append("## Raw Results")
         lines.append("")
-        lines.append("| # | Query | Expected | Predicted | Correct |")
-        lines.append("|---|-------|----------|-----------|---------|")
-        for i, row in enumerate(rows, 1):
-            query = str(row.get("query", row.get("input", "")))[:50]
-            expected = row.get("expected", "")
-            predicted = row.get("predicted", "")
-            correct = "Y" if expected == predicted else "N"
-            lines.append(f"| {i} | {query} | {expected} | {predicted} | {correct} |")
+        sample = rows[0]
+        if "recall" in sample and "precision" in sample:
+            lines.append("| # | Query | Recall | Precision | Status |")
+            lines.append("|---|-------|--------|-----------|--------|")
+            for i, row in enumerate(rows, 1):
+                query = str(row.get("query", row.get("input", "")))[:50]
+                rec = f"{row.get('recall', 0.0):.2f}"
+                prec = f"{row.get('precision', 0.0):.2f}"
+                passed = row.get("recall_passed", False) and row.get("precision_passed", False)
+                status = "PASS" if passed else "FAIL"
+                lines.append(f"| {i} | {query} | {rec} | {prec} | {status} |")
+        elif "faithfulness" in sample and "answer_relevancy" in sample:
+            lines.append("| # | Query | Faithfulness | Relevancy | Status |")
+            lines.append("|---|-------|--------------|-----------|--------|")
+            for i, row in enumerate(rows, 1):
+                query = str(row.get("query", row.get("input", "")))[:50]
+                f_val = f"{row.get('faithfulness', 0.0):.2f}" if row.get("faithfulness") is not None else "N/A"
+                r_val = f"{row.get('answer_relevancy', 0.0):.2f}" if row.get("answer_relevancy") is not None else "N/A"
+                passed = row.get("faithfulness_passed", False) and row.get("answer_relevancy_passed", False)
+                status = "PASS" if passed else "FAIL"
+                lines.append(f"| {i} | {query} | {f_val} | {r_val} | {status} |")
+        else:
+            lines.append("| # | Query | Expected | Predicted | Correct |")
+            lines.append("|---|-------|----------|-----------|---------|")
+            for i, row in enumerate(rows, 1):
+                query = str(row.get("query", row.get("input", "")))[:50]
+                expected = row.get("expected", "")
+                predicted = row.get("predicted", "")
+                correct = "Y" if expected == predicted else "N"
+                lines.append(f"| {i} | {query} | {expected} | {predicted} | {correct} |")
         lines.append("")
 
     lines.append("---")

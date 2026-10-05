@@ -33,7 +33,12 @@ JUDGE_CONFIG = load_config().get("judges", {})
 
 JUDGE_MODEL = JUDGE_CONFIG.get("model", "llama-3.1-8b-instant")
 JUDGE_PROVIDER = JUDGE_CONFIG.get("provider", "groq")
-JUDGE_BASE_URL = JUDGE_CONFIG.get("base_url", "https://api.groq.com/openai/v1")
+# ChatGroq already defaults to https://api.groq.com/openai/v1 — passing it
+# explicitly causes URL doubling (/openai/v1/openai/v1/chat/completions).
+# Only override when a non-default base_url is configured.
+_judge_base_url_cfg = JUDGE_CONFIG.get("base_url", "https://api.groq.com/openai/v1")
+_GROQ_DEFAULT = "https://api.groq.com/openai/v1"
+JUDGE_BASE_URL = None if _judge_base_url_cfg == _GROQ_DEFAULT else _judge_base_url_cfg
 JUDGE_TEMPERATURE = float(JUDGE_CONFIG.get("temperature", 0.0))
 JUDGE_TIMEOUT_S = int(JUDGE_CONFIG.get("timeout_s", 30))
 USAGE_FIELDS = JUDGE_CONFIG.get("usage_fields", {})
@@ -49,12 +54,14 @@ def _get_judge_client() -> ChatGroq:
     """Return the lazy-initialised Groq judge client."""
     global _judge_client
     if _judge_client is None:
-        _judge_client = ChatGroq(
-            model=JUDGE_MODEL,
-            temperature=JUDGE_TEMPERATURE,
-            base_url=JUDGE_BASE_URL,
-            timeout=JUDGE_TIMEOUT_S,
-        )
+        kwargs: dict = {
+            "model": JUDGE_MODEL,
+            "temperature": JUDGE_TEMPERATURE,
+            "timeout": JUDGE_TIMEOUT_S,
+        }
+        if JUDGE_BASE_URL is not None:
+            kwargs["base_url"] = JUDGE_BASE_URL
+        _judge_client = ChatGroq(**kwargs)
     return _judge_client
 
 
@@ -273,14 +280,24 @@ def _parse_json_from_response(content: str) -> dict | None:
     return None
 
 
-def _call_judge(messages: list, expect_dict: bool = True) -> dict | None:
+def _call_judge(
+    messages: list,
+    expect_dict: bool = True,
+    *,
+    token_tracker: JudgeTokenTracker | None = None,
+) -> dict | None:
     """Call the judge LLM and parse the response.
 
     Returns a dict on success, None on any failure (never raises).
+
+    If *token_tracker* is provided, token usage is recorded from the
+    raw response before the parsed body is returned (single API call).
     """
     try:
         client = _get_judge_client()
         response = client.invoke(messages)
+        if token_tracker is not None:
+            token_tracker.record(response)
         content = getattr(response, "content", None)
         if isinstance(content, str):
             parsed = _parse_json_from_response(content)
@@ -301,14 +318,20 @@ def _call_judge(messages: list, expect_dict: bool = True) -> dict | None:
 # Public judge functions
 # ---------------------------------------------------------------------------
 
-def judge_faithfulness(query: str, context: str, answer: str) -> float | None:
+def judge_faithfulness(
+    query: str,
+    context: str,
+    answer: str,
+    *,
+    token_tracker: JudgeTokenTracker | None = None,
+) -> float | None:
     """Return faithfulness score (0-1) or None on failure.
 
     Claim-split answer, verdict each claim against context,
     return supported/total.
     """
     messages = _faithfulness_prompt(query, context, answer)
-    result = _call_judge(messages)
+    result = _call_judge(messages, token_tracker=token_tracker)
     if result is None:
         return None
     score = result.get("score")
@@ -318,10 +341,15 @@ def judge_faithfulness(query: str, context: str, answer: str) -> float | None:
         return None
 
 
-def judge_answer_relevancy(query: str, answer: str) -> float | None:
+def judge_answer_relevancy(
+    query: str,
+    answer: str,
+    *,
+    token_tracker: JudgeTokenTracker | None = None,
+) -> float | None:
     """Return answer relevancy score (0-1) or None on failure."""
     messages = _answer_relevancy_prompt(query, answer)
-    result = _call_judge(messages)
+    result = _call_judge(messages, token_tracker=token_tracker)
     if result is None:
         return None
     score = result.get("score")
@@ -331,10 +359,15 @@ def judge_answer_relevancy(query: str, answer: str) -> float | None:
         return None
 
 
-def judge_contextual_relevancy(query: str, context: str) -> float | None:
+def judge_contextual_relevancy(
+    query: str,
+    context: str,
+    *,
+    token_tracker: JudgeTokenTracker | None = None,
+) -> float | None:
     """Return contextual relevancy score (0-1) or None on failure."""
     messages = _contextual_relevancy_prompt(query, context)
-    result = _call_judge(messages)
+    result = _call_judge(messages, token_tracker=token_tracker)
     if result is None:
         return None
     score = result.get("score")
@@ -344,14 +377,20 @@ def judge_contextual_relevancy(query: str, context: str) -> float | None:
         return None
 
 
-def judge_g_eval(query: str, answer: str, rubric: dict[str, str]) -> dict[str, float] | None:
+def judge_g_eval(
+    query: str,
+    answer: str,
+    rubric: dict[str, str],
+    *,
+    token_tracker: JudgeTokenTracker | None = None,
+) -> dict[str, float] | None:
     """Return G-Eval scores per dimension (1-5) or None on failure.
 
     rubric: dict mapping dimension name -> description text.
     Returns dict like {"correctness": 4.0, "completeness": 3.0, "style": 5.0}.
     """
     messages = _geval_prompt(query, answer, rubric)
-    result = _call_judge(messages)
+    result = _call_judge(messages, token_tracker=token_tracker)
     if result is None:
         return None
     scores: dict[str, float] = {}
@@ -364,10 +403,14 @@ def judge_g_eval(query: str, answer: str, rubric: dict[str, str]) -> dict[str, f
     return scores if scores else None
 
 
-def judge_toxicity(answer: str) -> float | None:
+def judge_toxicity(
+    answer: str,
+    *,
+    token_tracker: JudgeTokenTracker | None = None,
+) -> float | None:
     """Return toxicity score (0-1, lower = safer) or None on failure."""
     messages = _toxicity_prompt(answer)
-    result = _call_judge(messages)
+    result = _call_judge(messages, token_tracker=token_tracker)
     if result is None:
         return None
     score = result.get("score")

@@ -7,8 +7,10 @@
 thresholds:
   # Router classification accuracy over evals/datasets/router.jsonl.
   router_accuracy: 0.90
-  # Retriever component metrics (DeepEval contextual recall / precision).
+  # Retriever component metrics:
   contextual_recall: 0.85
+  # Note: raw precision@k with k=5 is bounded by |relevant|/k (~0.20-0.40 for 1-2 ground truth chunks).
+  # 0.80 target applies to rank-weighted / contextual precision or dense label sets.
   contextual_precision: 0.80
   # Generator + full-pipeline triad (DeepEval faithfulness / answer relevancy).
   faithfulness: 0.90
@@ -41,14 +43,11 @@ thresholds:
 # Session 1 decision: FALLBACK hand-rolled (no DeepEval).
 # ---------------------------------------------------------------------------
 judges:
-  model: llama-3.1-8b-instant      # Groq fast-tier model — free quota
+  model: openai/gpt-oss-20b  # Groq fast-tier; llama-3.1-8b-instant retired 2026-08-16
   provider: groq
-  base_url: https://api.groq.com/openai/v1
   temperature: 0.0
   timeout_s: 30
-  # Toxicity: 0.0 = clean, 1.0 = maximally toxic (lower is safer).
-  # score_fields maps provider response key names (varies by SDK version).
-  usage_fields:                     # safe extraction order for token counts
+  usage_fields:              # safe extraction order for token counts
     input:  [input_tokens, prompt_tokens]
     output: [output_tokens, completion_tokens]
 
