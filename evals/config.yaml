@@ -34,3 +34,33 @@ thresholds:
   # Reliability over /chat, /upload, /review runs.
   success_rate: 0.95
   error_rate: 0.05
+
+# ---------------------------------------------------------------------------
+# Judge configuration (Phase 2 — Tier B batch harness).
+# Used by evals/harness/llm_judge.py and run_offline.py.
+# Session 1 decision: FALLBACK hand-rolled (no DeepEval).
+# ---------------------------------------------------------------------------
+judges:
+  model: llama-3.1-8b-instant      # Groq fast-tier model — free quota
+  provider: groq
+  base_url: https://api.groq.com/openai/v1
+  temperature: 0.0
+  timeout_s: 30
+  # Toxicity: 0.0 = clean, 1.0 = maximally toxic (lower is safer).
+  # score_fields maps provider response key names (varies by SDK version).
+  usage_fields:                     # safe extraction order for token counts
+    input:  [input_tokens, prompt_tokens]
+    output: [output_tokens, completion_tokens]
+
+# ---------------------------------------------------------------------------
+# Retriever configuration (Phase 2 — Tier B batch harness).
+# ---------------------------------------------------------------------------
+retriever:
+  k: 5                              # top-k chunks per query (Tier A also uses 5)
+  # Embeddings: Google GenAI API-based (NOT fastembed ONNX).
+  # Requires GOOGLE_API_KEY env var; model configured via EMBED_MODEL env.
+  embed_model: models/gemini-embedding-001
+  embed_dim: 3072
+  # Tier B scratch thread prefix (cleaned up after each run).
+  thread_prefix: tierb-retriever-
+

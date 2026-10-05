@@ -52,3 +52,7 @@ railway.toml
 nixpacks.toml
 # Eval run reports (EVAL_PLAN.md Phase 2+); datasets and harness stay tracked.
 evals/results/
+
+# Development / agent prompt instruction templates
+prompts/
+
