@@ -25,6 +25,11 @@ from evals.config import load_config
 
 logger = logging.getLogger("agentflow.eval.judge")
 
+# Last exception message raised inside _call_judge (cleared before each
+# call). Lets the batch harness distinguish quota (429) failures from
+# other judge errors even though judges never raise.
+last_judge_error: str | None = None
+
 # ---------------------------------------------------------------------------
 # Config + client
 # ---------------------------------------------------------------------------
@@ -293,6 +298,8 @@ def _call_judge(
     If *token_tracker* is provided, token usage is recorded from the
     raw response before the parsed body is returned (single API call).
     """
+    global last_judge_error
+    last_judge_error = None
     try:
         client = _get_judge_client()
         response = client.invoke(messages)
@@ -309,7 +316,8 @@ def _call_judge(
                 return None
             return {"raw": content}
         return None
-    except Exception:
+    except Exception as exc:
+        last_judge_error = f"{type(exc).__name__}: {exc}"
         logger.exception("judge: LLM call failed")
         return None
 

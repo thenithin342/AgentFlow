@@ -227,33 +227,41 @@ def cleanup_eval_indexes() -> None:
 def cleanup_tierb_indexes(thread_prefix: str = "tierb-retriever-") -> int:
     """Remove Tier B scratch FAISS indexes (best-effort).
 
+    ``INDEX_ROOT`` stores each index under ``sha256(thread_id)``, which
+    cannot be reversed — so candidate thread names are re-hashed and
+    matched against the on-disk dirs. Candidates are ``{prefix}{i}``
+    for a bounded numeric range plus, for the default retriever prefix,
+    the legacy ``{prefix}{source_doc}`` names.
+
     Returns the number of index dirs removed.
     """
     import shutil
 
     import backend.rag.ingest as ingest_mod
 
+    candidates = [f"{thread_prefix}{i}" for i in range(500)]
+    if thread_prefix == "tierb-retriever-":
+        candidates += [f"{thread_prefix}{slug}" for slug in SOURCE_DOCS]
+
+    candidate_hashes = {
+        hashlib.sha256(name.encode("utf-8")).hexdigest(): name
+        for name in candidates
+    }
+
     removed = 0
-    # Scan INDEX_ROOT for dirs whose thread_id rounds-trips to a tierb prefix
     index_root = ingest_mod._get_index_root()
     if not index_root.exists():
         return 0
     for hashed_dir in index_root.iterdir():
         if not hashed_dir.is_dir():
             continue
+        thread_id = candidate_hashes.get(hashed_dir.name)
+        if thread_id is None:
+            continue
+        ingest_mod._RETRIEVERS.pop(thread_id, None)
         try:
-            # Reverse: find the thread_id whose hash matches this dir name
-            # Brute-force over known source_docs + prefix patterns.
-            for slug in SOURCE_DOCS:
-                for prefix in (f"tierb-retriever-{slug}", f"tierb-{slug}"):
-                    if hashlib.sha256(prefix.encode("utf-8")).hexdigest() == hashed_dir.name:
-                        ingest_mod._RETRIEVERS.pop(prefix, None)
-                        try:
-                            shutil.rmtree(hashed_dir)
-                            removed += 1
-                        except PermissionError:
-                            pass
-                        break
-        except (ValueError, OSError):
+            shutil.rmtree(hashed_dir)
+            removed += 1
+        except (PermissionError, OSError):
             pass
     return removed

@@ -9,7 +9,7 @@ Subcommands:
     router      Run router accuracy evaluation (fully implemented this session)
     retriever   Stub — not implemented yet
     generator   Stub — not implemented yet
-    rag-qa      Stub — not implemented yet
+    rag-qa      RAG QA triad eval (end-to-end pipeline)
     application Stub — not implemented yet
     safety      Stub — not implemented yet
     blog        Stub — not implemented yet
@@ -49,6 +49,17 @@ from typing import Any
 HERE = Path(__file__).resolve().parent
 PROJECT_ROOT = HERE.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
+
+try:
+    from dotenv import load_dotenv
+    load_dotenv(PROJECT_ROOT / ".env")
+except ImportError:
+    pass
+
+# Hard constraint for Tier B: local FAISS vectorstore only (never remote Qdrant)
+import os
+
+os.environ["QDRANT_URL"] = ""
 
 from evals.config import load_config
 from evals.harness.metrics import (
@@ -602,11 +613,495 @@ def run_generator_evaluation(
 
 
 # ---------------------------------------------------------------------------
+# Dataset loading
+# ---------------------------------------------------------------------------
+
+def load_ragqa_dataset() -> list[dict]:
+    """Load the RAG QA evaluation dataset from evals/datasets/rag_qa.jsonl."""
+    dataset_path = PROJECT_ROOT / "evals" / "datasets" / "rag_qa.jsonl"
+    rows = []
+    with open(dataset_path, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            rows.append(json.loads(line))
+    return rows
+
+
+# ---------------------------------------------------------------------------
+# RAG QA evaluation (Tier B pipeline triad)
+# ---------------------------------------------------------------------------
+
+def _load_existing_results(output_dir: Path, name: str) -> dict | None:
+    """Load existing results JSON if it exists, for --resume support."""
+    json_path = output_dir / f"{name}.json"
+    if json_path.exists():
+        with open(json_path, encoding="utf-8") as f:
+            return json.load(f)
+    return None
+
+
+def _count_tavily_calls(messages: list) -> int:
+    """Count tavily_search tool calls from a list of messages.
+
+    Scans for ToolMessage entries whose name contains 'tavily'.
+    """
+    count = 0
+    for msg in messages:
+        name = getattr(msg, "name", None)
+        if name and "tavily" in name.lower():
+            count += 1
+    return count
+
+
+def _is_groq_rate_limit_error(exc: BaseException) -> bool:
+    """True when *exc* looks like a Groq/provider 429 rate limit.
+
+    Matches the exception's type name and message only — no provider SDK
+    imports needed (RateLimitError etc. stringify their HTTP status).
+    """
+    text = f"{type(exc).__name__}: {exc}".lower()
+    return "429" in text and ("rate" in text or "quota" in text or "groq" in text)
+
+
+def _classify_judge_failure(judge_error: str | None) -> str:
+    """Map a recorded judge failure message to a row status.
+
+    Groq 429 -> "groq_quota"; any other judge failure -> "error".
+    """
+    lowered = (judge_error or "").lower()
+    if "429" in lowered and (
+        "rate" in lowered or "quota" in lowered or "groq" in lowered
+    ):
+        return "groq_quota"
+    return "error"
+
+
+def run_ragqa_evaluation(
+    rows: list[dict],
+    limit: int | None = None,
+    offset: int = 0,
+    resume: bool = False,
+) -> dict[str, Any]:
+    """Run RAG QA pipeline triad evaluation on the given rows.
+
+    For each row:
+    1. Ingest the row's reference text into a scratch FAISS thread with
+       real Google GenAI embeddings.
+    2. Run one full graph turn (router → agent → synthesizer).
+    3. Extract final_response, documents, route from the state.
+    4. Score the triad: contextual_relevancy, faithfulness, answer_relevancy.
+
+    Args:
+        rows: list of rag_qa dataset rows.
+        limit: maximum number of rows to process (None = all).
+        offset: number of rows to skip from the start.
+        resume: if True, skip rows already present in the output JSON.
+
+    Returns:
+        Results dict with per-row triad scores, route, latency, tokens, etc.
+    """
+    from evals.harness.llm_judge import (
+        JudgeTokenTracker,
+        judge_answer_relevancy,
+        judge_contextual_relevancy,
+        judge_faithfulness,
+    )
+    from evals.harness.metrics import aggregate_operational
+
+    # Apply offset and limit
+    sliced_rows = rows[offset:]
+    if limit is not None:
+        sliced_rows = sliced_rows[:limit]
+
+    results_rows: list[dict] = []
+    cr_scores: list[float] = []
+    fth_scores: list[float] = []
+    ar_scores: list[float] = []
+    timings: list[float] = []
+    errors: list[Exception] = []
+    tavily_calls_total = 0
+    status_counts: dict[str, int] = {"ok": 0, "tavily_quota": 0, "groq_quota": 0, "error": 0}
+
+    # --resume: load existing results and skip completed rows. Only rows
+    # with status "ok" count as completed — quota/error rows are retried.
+    # Prior completed rows are seeded into the report so aggregates span
+    # all runs (batched-over-days execution keeps one coherent artifact).
+    existing = None
+    completed_queries: set[str] = set()
+    if resume:
+        existing = _load_existing_results(
+            PROJECT_ROOT / "evals" / "results", "ragqa_tierb"
+        )
+        if existing and "rows" in existing:
+            for prev in existing["rows"]:
+                if prev.get("status") != "ok":
+                    continue
+                completed_queries.add(prev.get("query", ""))
+                results_rows.append(prev)
+                status_counts["ok"] += 1
+                for key, bucket in (
+                    ("contextual_relevancy", cr_scores),
+                    ("faithfulness", fth_scores),
+                    ("answer_relevancy", ar_scores),
+                ):
+                    value = prev.get(key)
+                    if isinstance(value, (int, float)):
+                        bucket.append(float(value))
+            if completed_queries:
+                print(
+                    f"Resuming: {len(completed_queries)} completed rows found, "
+                    f"skipping them",
+                    file=sys.stderr,
+                )
+
+    config = load_config()
+    thresholds_config = config.get("thresholds", {})
+    cr_threshold = thresholds_config.get("contextual_relevancy", 0.80)
+    fth_threshold = thresholds_config.get("faithfulness", 0.90)
+    ar_threshold = thresholds_config.get("answer_relevancy", 0.90)
+
+    token_tracker = JudgeTokenTracker()
+
+    start_time = time.time()
+
+    # Hoisted imports
+    import shutil
+    import tempfile
+    from pathlib import Path
+
+    from langchain_community.document_loaders import TextLoader
+    from langchain_community.vectorstores import FAISS
+    from langchain_core.messages import HumanMessage
+    from langchain_text_splitters import RecursiveCharacterTextSplitter
+
+    # Judge error classification for quota handling. Judge functions
+    # return None on exception (never raise), so the recorded error is
+    # inspected after each row's judge calls to detect provider 429s.
+    import evals.harness.llm_judge as llm_judge_mod
+    from backend.graph.build_graph import build_compiled_graph
+    from backend.rag.ingest import (
+        _EMBED_MODEL,
+        _get_embeddings,
+        _index_dir,
+        get_retriever,
+    )
+
+    scratch_db = PROJECT_ROOT / "evals" / "results" / "tierb_rag.db"
+    scratch_db.parent.mkdir(parents=True, exist_ok=True)
+
+    for i, row in enumerate(sliced_rows):
+        original_idx = offset + i
+
+        # --resume: skip if this query was already processed
+        if resume and row.get("query", "") in completed_queries:
+            print(
+                f"    Skipping row {original_idx} (already completed)",
+                file=sys.stderr,
+            )
+            continue
+
+        query = row.get("query", "")
+        reference = row.get("reference", "")
+        thread_id = f"tierb-rag-{original_idx}"
+
+        row_start = time.time()
+        row_status = "ok"
+        tavily_calls = 0
+
+        try:
+            # --- Step 1: Ingest reference text into scratch FAISS thread ---
+            tmp_dir = Path(tempfile.mkdtemp(prefix="ragqa_ingest_"))
+            try:
+                txt_path = tmp_dir / f"ref_{original_idx}.txt"
+                txt_path.write_text(reference, encoding="utf-8")
+
+                loader = TextLoader(str(txt_path), encoding="utf-8")
+                docs = loader.load()
+                for doc in docs:
+                    doc.metadata["source"] = f"ref_{original_idx}.txt"
+                    doc.metadata["thread_id"] = thread_id
+
+                splitter = RecursiveCharacterTextSplitter(
+                    chunk_size=800, chunk_overlap=150
+                )
+                chunks = splitter.split_documents(docs)
+
+                if chunks:
+                    index_dir = _index_dir(thread_id)
+                    index_dir.mkdir(parents=True, exist_ok=True)
+                    embeddings = _get_embeddings()
+
+                    if not any(index_dir.iterdir()):
+                        faiss_index = FAISS.from_documents(chunks, embeddings)
+                    else:
+                        faiss_index = FAISS.load_local(
+                            str(index_dir),
+                            embeddings,
+                            allow_dangerous_deserialization=True,
+                        )
+                        faiss_index.add_documents(chunks)
+
+                    faiss_index.save_local(str(index_dir))
+                    # Write model tag so _load_faiss_index doesn't reject this
+                    # index as incompatible (untagged indexes are treated as
+                    # built with a different embedding model).
+                    (index_dir / "embed_model.txt").write_text(
+                        _EMBED_MODEL, encoding="utf-8"
+                    )
+            finally:
+                shutil.rmtree(tmp_dir, ignore_errors=True)
+
+            # --- Step 2: Retrieve documents and run one full graph turn ---
+            graph = build_compiled_graph(db_path=str(scratch_db))
+            graph_config = {"configurable": {"thread_id": thread_id}}
+
+            # Pre-retrieve documents from the scratch thread so the agent
+            # has context available. The research/analysis agents may call
+            # retrieve_documents themselves, but pre-populating ensures the
+            # documents field is set for triad scoring even if the agent
+            # decides not to use the tool.
+            context_docs: list[str] = []
+            try:
+                retriever = get_retriever(thread_id)
+                if retriever:
+                    retrieved = retriever.invoke(query)
+                    context_docs = [d.page_content.strip() for d in retrieved]
+            except Exception:
+                pass
+
+            graph_start = time.time()
+            result = graph.invoke(
+                {
+                    "messages": [HumanMessage(content=query)],
+                    "documents": context_docs,
+                },
+                config=graph_config,
+            )
+            graph_time = time.time() - graph_start
+
+            # --- Step 3: Extract state fields ---
+            final_response = result.get("final_response") or ""
+            documents: list[str] = result.get("documents") or []
+            route = result.get("route") or "unknown"
+
+            all_messages = result.get("messages") or []
+            tavily_calls = _count_tavily_calls(all_messages)
+            tavily_calls_total += tavily_calls
+
+            # --- Step 4: Score the triad ---
+            context_text = "\n\n".join(documents) if documents else ""
+
+            contextual_relevancy: float | None = None
+            faithfulness: float | None = None
+            answer_relevancy: float | None = None
+
+            if context_text:
+                contextual_relevancy = judge_contextual_relevancy(
+                    query, context_text, token_tracker=token_tracker
+                )
+
+            faithfulness = judge_faithfulness(
+                query, context_text, final_response,
+                token_tracker=token_tracker,
+            )
+            answer_relevancy = judge_answer_relevancy(
+                query, final_response, token_tracker=token_tracker
+            )
+
+            if contextual_relevancy is not None:
+                cr_scores.append(contextual_relevancy)
+            if faithfulness is not None:
+                fth_scores.append(faithfulness)
+            if answer_relevancy is not None:
+                ar_scores.append(answer_relevancy)
+
+            row_time = time.time() - row_start
+            timings.append(row_time)
+
+            results_rows.append({
+                "query": query,
+                "reference": reference,
+                "route": route,
+                "final_response": (
+                    final_response[:300] + "..."
+                    if len(final_response) > 300
+                    else final_response
+                ),
+                "documents_count": len(documents),
+                "contextual_relevancy": contextual_relevancy,
+                "faithfulness": faithfulness,
+                "answer_relevancy": answer_relevancy,
+                "contextual_relevancy_threshold": cr_threshold,
+                "faithfulness_threshold": fth_threshold,
+                "answer_relevancy_threshold": ar_threshold,
+                "contextual_relevancy_passed": (
+                    contextual_relevancy is not None
+                    and contextual_relevancy >= cr_threshold
+                ),
+                "faithfulness_passed": (
+                    faithfulness is not None
+                    and faithfulness >= fth_threshold
+                ),
+                "answer_relevancy_passed": (
+                    answer_relevancy is not None
+                    and answer_relevancy >= ar_threshold
+                ),
+                "graph_time": graph_time,
+                "tavily_calls": tavily_calls,
+                "status": row_status,
+            })
+
+        except Exception as e:
+            errors.append(e)
+            timings.append(time.time() - row_start)
+            row_status = "error"
+            status_counts["error"] += 1
+            results_rows.append({
+                "query": query,
+                "reference": reference,
+                "route": "error",
+                "final_response": "",
+                "documents_count": 0,
+                "contextual_relevancy": None,
+                "faithfulness": None,
+                "answer_relevancy": None,
+                "contextual_relevancy_threshold": cr_threshold,
+                "faithfulness_threshold": fth_threshold,
+                "answer_relevancy_threshold": ar_threshold,
+                "contextual_relevancy_passed": False,
+                "faithfulness_passed": False,
+                "answer_relevancy_passed": False,
+                "graph_time": 0.0,
+                "tavily_calls": 0,
+                "status": row_status,
+                "error": str(e),
+            })
+
+        # Progress indicator
+        processed = len(results_rows)
+        total = len(sliced_rows)
+        if processed % 5 == 0 or processed == total:
+            print(f"    Processed {processed}/{total} rows...", file=sys.stderr)
+
+        # --- Quota handling (eval-plan spec) ---
+        # Tavily 429 -> mark row tavily_quota, skip triad, continue.
+        # Groq 429 -> stop the run entirely (no retry).
+        if row_status == "error":
+            last_err = errors[-1] if errors else None
+            if last_err is not None and _is_groq_rate_limit_error(last_err):
+                status_counts["groq_quota"] += 1
+                results_rows[-1]["status"] = "groq_quota"
+                print(
+                    "    Groq rate limit hit (429) - stopping run. "
+                    "Use --resume to continue later.",
+                    file=sys.stderr,
+                )
+                break
+            if last_err is not None and "tavily" in str(last_err).lower() and "429" in str(last_err):
+                status_counts["tavily_quota"] += 1
+                results_rows[-1]["status"] = "tavily_quota"
+                continue
+
+        # --- Judge failure classification (judges never raise) ---
+        if (
+            row_status == "ok"
+            and (
+                contextual_relevancy is None
+                or faithfulness is None
+                or answer_relevancy is None
+            )
+        ):
+            if _classify_judge_failure(llm_judge_mod.last_judge_error) == "groq_quota":
+                status_counts["groq_quota"] += 1
+                results_rows[-1]["status"] = "groq_quota"
+                print(
+                    "    Groq rate limit hit (429) during judging - stopping run. "
+                    "Use --resume to continue later.",
+                    file=sys.stderr,
+                )
+                break
+
+        if row_status == "ok":
+            status_counts["ok"] += 1
+            time.sleep(3)
+
+    wall_time = time.time() - start_time
+
+    # Sort results_rows to maintain original dataset order across resume runs
+    query_order = {r.get("query", ""): idx for idx, r in enumerate(rows)}
+    results_rows.sort(key=lambda r: query_order.get(r.get("query", ""), 999))
+
+    # Compute aggregates
+    mean_cr = (
+        sum(cr_scores) / len(cr_scores) if cr_scores else 0.0
+    )
+    mean_fth = (
+        sum(fth_scores) / len(fth_scores) if fth_scores else 0.0
+    )
+    mean_ar = (
+        sum(ar_scores) / len(ar_scores) if ar_scores else 0.0
+    )
+
+    operational = aggregate_operational(
+        timings=timings if timings else None,
+        errors=errors if errors else None,
+        total_calls=len(sliced_rows),
+    )
+
+    results: dict[str, Any] = {
+        "name": "ragqa",
+        "judge_model": config.get("judges", {}).get("model", "unknown"),
+        "implementation": "hand-rolled",
+        "rows": results_rows,
+        "aggregate": {
+            "mean_contextual_relevancy": mean_cr,
+            "mean_faithfulness": mean_fth,
+            "mean_answer_relevancy": mean_ar,
+            "n_rows": len(results_rows),
+            "n_below_threshold": sum(
+                1 for r in results_rows
+                if not r.get("contextual_relevancy_passed", False)
+                or not r.get("faithfulness_passed", False)
+                or not r.get("answer_relevancy_passed", False)
+            ),
+        },
+        "thresholds": {
+            "contextual_relevancy": {
+                "value": mean_cr,
+                "threshold": cr_threshold,
+                "passed": mean_cr >= cr_threshold,
+            },
+            "faithfulness": {
+                "value": mean_fth,
+                "threshold": fth_threshold,
+                "passed": mean_fth >= fth_threshold,
+            },
+            "answer_relevancy": {
+                "value": mean_ar,
+                "threshold": ar_threshold,
+                "passed": mean_ar >= ar_threshold,
+            },
+        },
+        "operational": {
+            "wall_time": wall_time,
+            "tokens": token_tracker.to_dict(),
+            "tavily_calls": tavily_calls_total,
+            "status_counts": status_counts,
+            **operational,
+        },
+    }
+
+    print_summary(results)
+    return results
+
+
+# ---------------------------------------------------------------------------
 # Stub subcommands
 # ---------------------------------------------------------------------------
 
 STUB_COMMANDS = {
-    "rag-qa",
     "application",
     "safety",
     "blog",
@@ -647,7 +1142,7 @@ def build_parser() -> argparse.ArgumentParser:
     parent.add_argument(
         "--resume",
         action="store_true",
-        help="Resume from previous run (not yet implemented)",
+        help="Resume from previous run (skips already-completed ok rows)",
     )
     parent.add_argument(
         "--out",
@@ -702,6 +1197,13 @@ def build_parser() -> argparse.ArgumentParser:
             parents=[parent],
             help=f"{cmd} evaluation (not yet implemented)",
         )
+
+    # Rag-qa subcommand (inherits global options) — implemented this session
+    subparsers.add_parser(
+        "rag-qa",
+        parents=[parent],
+        help="Run RAG QA pipeline triad evaluation (end-to-end graph runs)",
+    )
 
     return parser
 
@@ -764,6 +1266,22 @@ def main(argv: list[str] | None = None) -> int:
             print("  2. For each row, call judge_faithfulness and judge_answer_relevancy")
             print("  3. Compare scores to thresholds")
             print("  4. Write JSON + Markdown report to evals/results/")
+        elif args.command == "rag-qa":
+            rows = load_ragqa_dataset()
+            sliced = rows[args.offset:]
+            if args.limit:
+                sliced = sliced[:args.limit]
+            print(f"\nRAG QA dataset: {len(rows)} total rows, "
+                  f"will process {len(sliced)} rows")
+            if args.resume:
+                print("Resume mode: skipping already-completed rows")
+            print("\nPlan:")
+            print("  1. Load RAG QA dataset from evals/datasets/rag_qa.jsonl")
+            print("  2. For each row, ingest reference text into scratch thread")
+            print("  3. Run one full graph turn (router -> agent -> synthesizer)")
+            print("  4. Score triad: contextual_relevancy, faithfulness, answer_relevancy")
+            print("  5. Write JSON + Markdown report to evals/results/")
+            print("  6. Clean up scratch DB and FAISS indexes")
         else:
             print("\nStatus: not_implemented (stub)")
 
@@ -892,6 +1410,71 @@ def main(argv: list[str] | None = None) -> int:
         if results.get("operational", {}).get("error_count", 0) > 0:
             print("\n[NOTE] Errors occurred during evaluation. "
                   "Check the report for details.", file=sys.stderr)
+
+        return 0
+
+    elif args.command == "rag-qa":
+        rows = load_ragqa_dataset()
+        print(f"Loaded {len(rows)} RAG QA evaluation rows")
+
+        # Check for required API keys
+        import os
+        missing = []
+        if not os.environ.get("GROQ_API_KEY"):
+            missing.append("GROQ_API_KEY")
+        if not os.environ.get("GOOGLE_API_KEY"):
+            missing.append("GOOGLE_API_KEY")
+        if missing:
+            print(f"WARNING: {', '.join(missing)} not set. RAG QA evaluation may fail.",
+                  file=sys.stderr)
+
+        results = run_ragqa_evaluation(
+            rows,
+            limit=args.limit,
+            offset=args.offset,
+            resume=args.resume,
+        )
+
+        # Write reports
+        output_dir = args.out or PROJECT_ROOT / "evals" / "results"
+        json_path, md_path = write_report(
+            name="ragqa_tierb",
+            results=results,
+            output_dir=output_dir,
+        )
+
+        print("\nReports written:")
+        print(f"  JSON: {json_path}")
+        print(f"  Markdown: {md_path}")
+
+        # Clean up scratch DB and FAISS indexes
+        print("\nCleaning up scratch resources...", file=sys.stderr)
+        scratch_db = PROJECT_ROOT / "evals" / "results" / "tierb_rag.db"
+        if scratch_db.exists():
+            try:
+                scratch_db.unlink()
+                print(f"  Removed scratch DB: {scratch_db}", file=sys.stderr)
+            except Exception as e:
+                print(f"  Could not remove scratch DB: {e}", file=sys.stderr)
+
+        # Clean up tierb-rag-* FAISS indexes
+        from evals.harness.retrieval import cleanup_tierb_indexes
+        n_removed = cleanup_tierb_indexes("tierb-rag-")
+        print(f"  Removed {n_removed} tierb-rag- FAISS index dirs", file=sys.stderr)
+
+        # Check for errors
+        if results.get("operational", {}).get("error_count", 0) > 0:
+            print("\n[NOTE] Errors occurred during evaluation. "
+                  "Check the report for details.", file=sys.stderr)
+
+        # Report quota state
+        op = results.get("operational", {})
+        sc = op.get("status_counts", {})
+        if sc.get("tavily_quota", 0) > 0:
+            print(f"\n[QUOTA] Tavily quota exhausted on {sc['tavily_quota']} row(s). "
+                  "Remaining rows skipped.", file=sys.stderr)
+        if sc.get("groq_quota", 0) > 0:
+            print(f"\n[QUOTA] Groq quota exhausted on {sc['groq_quota']} row(s).", file=sys.stderr)
 
         return 0
 
