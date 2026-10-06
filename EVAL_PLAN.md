@@ -220,8 +220,8 @@ Sized to run within the free-tier quota (~one full run/day).
 - [x] `evals/` package + `config.yaml` + `README.md` (quota budget table)
 - [x] Golden datasets seed (8 files, 121 rows) + golden retrieval corpus (3 PDFs, `build_corpus.py` deterministic — regenerates every run)
 - [x] Tier A deterministic suite, green in CI, blocks merge (21 base tests + expanded router/format/security edge cases; explicit tier_a CI step; ruff covers evals/; coverage floor 55%; audited 2026-09-15, gaps fixed 2026-10-03)
-- [ ] Tier B batch harness + baselines + reports
-- [ ] DeepEval/G-Eval judge wiring on Groq (OpenAI-compatible endpoint) + Gemini fallback
+- [x] Tier B batch harness + baselines + reports (Session 5: all 8 subcommands in `evals/harness/run_offline.py` — router, retriever, generator, rag-qa, application, safety, memory, blog; `evals/results/baseline.json` + `--compare` per-metric regression diff)
+- [x] DeepEval/G-Eval judge wiring on Groq + Gemini fallback (Session 1 decision: FALLBACK hand-rolled judges in `evals/harness/llm_judge.py`, pinned `openai/gpt-oss-20b` on Groq; covers faithfulness, answer/contextual relevancy, G-Eval 1–5, toxicity — the DeepEval spike was not needed because the fallback covers every judge)
 - [ ] CI job for Tier A (push/PR) and Tier B (nightly / workflow_dispatch)
 - [ ] LangSmith online runner replacing the dummy eval
 - [ ] Live black-box API suite (SSE contract, TTFT, p95, RAG round-trip, review, auth)

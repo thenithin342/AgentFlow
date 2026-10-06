@@ -81,24 +81,101 @@ $env:LANGCHAIN_TRACING_V2='false'; $env:LANGCHAIN_API_KEY=''
 python -m pytest tests/test_tier_a_*.py -q
 ```
 
+## How to run (Phase 2 — Tier B)
+
+Tier B runs the golden datasets through the real Groq/Gemini stack. Always run
+from the repo root with `PYTHONPATH=.`; never under pytest.
+
+```bash
+# Env hygiene — the harness also forces these itself
+export QDRANT_URL="" LANGCHAIN_TRACING_V2=false
+unset LANGCHAIN_API_KEY
+
+# Validate the datasets first (stdlib only; exits 0)
+python evals/harness/validate_datasets.py
+
+# One subcommand per metric family. --limit N smoke-tests, --resume continues
+# after a quota stop (only rows still in "ok" status are skipped).
+python evals/harness/run_offline.py router
+python evals/harness/run_offline.py retriever
+python evals/harness/run_offline.py generator
+python evals/harness/run_offline.py rag-qa --resume
+python evals/harness/run_offline.py application --resume
+python evals/harness/run_offline.py safety
+python evals/harness/run_offline.py memory
+python evals/harness/run_offline.py blog
+
+# Aggregate every *_tierb.json into a baseline, then diff runs against it
+python evals/harness/run_offline.py baseline
+python evals/harness/run_offline.py --compare evals/results/baseline.json
+python evals/harness/run_offline.py application --compare evals/results/baseline.json
+```
+
+`--compare` prints a per-metric delta (`current - baseline`) and flags a
+regression when a higher-is-better metric drops by more than 0.05 (or a
+lower-is-better metric such as toxicity/leakage rises by more than 0.05). Exit
+code is 0 on a clean diff, 1 when a regression is flagged.
+
+### Observed — full run 2026-10-06 (judge `openai/gpt-oss-20b` on Groq)
+
+| Subcommand | Rows | Wall | LLM calls | Tokens | Tavily | Gate |
+|---|---|---|---|---|---|---|
+| router | 44 | 213 s | 44 classify | n/a | 0 | accuracy 0.977 ✅ |
+| retriever | 12 | 14 s | 0 (embeddings only) | n/a | 0 | recall 1.00 ✅ / precision 0.25 ❌ |
+| generator | 20 | 86 s | 40 judge | 20.4 K | 0 | faithfulness 1.00 ✅ / relevancy 0.99 ✅ |
+| rag-qa | 25 | 372 s | 24 judge | 12.1 K | 0 | ctx-rel 0.952 ✅ / faith 0.708 ❌ / relevancy 0.948 ✅ |
+| application | 20 | 232 s | 27 graph + 20 judge | 54.9 K + 5.3 K | 10–30 | G-Eval 4.17 ✅ |
+| safety | 12 | 197 s | 39 graph + 12 judge | 28.9 K + 4.6 K | 2 | scope 0.75 ❌ / PII 1 ❌ / protected 0 ✅ / tox 0 ✅ |
+| memory | 8 | 28 s | 8 extract | 2.5 K | 0 | entity 1.00 ✅ / round-trip ✅ (extract precision 0.44, informational) |
+| blog | 5 | 209 s | 23 graph + 5 judge | 37.3 K + 11.6 K | 16 | G-Eval 4.60 ✅ / structure 0.60 ❌ |
+
+Notes from that run:
+
+- **Groq free tier is ~200 K tokens/day per org.** The primary key exhausted
+  mid-run and the judge client (single key, no fallback) stopped `application`
+  at 15/20 rows. `--resume` completed it with a secondary key. The graph LLM
+  pool falls back across `GROQ_API_KEY` / `_2` / `_3`, but the judge only reads
+  `GROQ_API_KEY`, so rotate that env var before a run when the primary is spent.
+- **Tavily counting** uses a LangChain `on_tool_start` callback (sub-agent tool
+  messages are not propagated to the parent graph state). On `--resume` the
+  seeded rows keep their recorded count, but the run total only covers the
+  resumed slice (application: 20 searches in run 1 + 10 in the resume = 30).
+- **Blog is the expensive path** — 3–4 Tavily searches and 5–9 K tokens per row.
+
+Implementation notes:
+
+- The real-graph runners (`application`, `safety`, `blog`) compile the graph
+  with an `InMemorySaver`, not the sync `SqliteSaver`: the blog node's
+  `agent.ainvoke` cannot run under a sync checkpointer (the ReAct sub-agent
+  inherits the parent checkpointer). Persistence is therefore per-run, which is
+  fine for single-turn evals.
+- Eval LTM writes are redirected to `evals/results/tierb_ltm/` via
+  `LTM_INDEX_DIR`, so the real `ltm_indexes/` tree is never touched.
+- Safety probes run through the real graph with a 30 s per-call bound. Scope
+  refusal reuses the shared `has_refusal`; the harness folds typographic
+  apostrophes (U+2019) first so `"I can’t"` is not a false negative.
+- Memory extraction precision is reported but not gated — the golden
+  `expected_facts` are paraphrases, so a literal substring metric is
+  informational. Entity recall and the cross-thread round-trip are gated.
+
 ## Quota budget
 
 Free-tier caps and the estimated Tier-B calls per full run (one dataset row ≈
 one LLM call unless noted):
 
-| Provider | Quota | Dataset | Rows (Phase 0 seed) | Est. calls/run |
+| Provider | Quota | Dataset | Rows | Calls (observed 2026-10-06) |
 |---|---|---|---|---|
-| Groq | 100K tokens/day | router.jsonl | 40+ | ~40 classify calls |
-| Groq | 100K tokens/day | generator.jsonl | 12+ | ~12 judge calls (faithfulness + relevancy ≈ 24) |
-| Groq | 100K tokens/day | rag_qa.jsonl | 15+ | ~15 e2e turns + ~45 triad judge calls |
-| Groq | 100K tokens/day | application.jsonl | 12+ | ~12 runs + ~36 G-Eval judge calls |
-| Groq | 100K tokens/day | blog.jsonl | 5+ | ~5 runs + ~10 judge calls |
-| Groq | 100K tokens/day | memory.jsonl | 8+ | ~8 extract/summarise calls |
-| Groq | 100K tokens/day | safety.jsonl | 12+ | ~12 probe calls |
-| Tavily | 1K searches/mo | research + blog runs | ~20 search-backed runs | ~20–60 searches (1–3 per run; reuse cached outputs where possible) |
+| Groq | 200K tokens/day | router.jsonl | 44 | 44 classify |
+| Groq | 200K tokens/day | generator.jsonl | 20 | 40 judge |
+| Groq | 200K tokens/day | rag_qa.jsonl | 25 | 24 triad judge |
+| Groq | 200K tokens/day | application.jsonl | 20 | 27 graph + 20 G-Eval judge |
+| Groq | 200K tokens/day | blog.jsonl | 5 | 23 graph + 5 G-Eval judge |
+| Groq | 200K tokens/day | memory.jsonl | 8 | 8 extract |
+| Groq | 200K tokens/day | safety.jsonl | 12 | 39 graph + 12 toxicity judge |
+| Tavily | 1K searches/mo | research + blog runs | 45 search-backed rows | ~48 searches observed (research ≈ 6/run, blog ≈ 3–4/run) |
 | Google | 1M tokens/day | embeddings (ingest + LTM) | 3 corpus PDFs + memory | negligible (short docs) |
 
-Total ≈ 130–190 LLM calls/run — sized to fit within one Groq daily budget
+Total ≈ 240 LLM calls/run, ~180K Groq tokens — sized to fit within one daily budget
 (~1 full Tier-B run/day). Tavily usage stays well under 1K/mo at nightly cadence.
 
 Note: token cost accounting uses LLM `usage_metadata` (see `backend/llm.py`

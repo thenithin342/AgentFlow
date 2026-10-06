@@ -27,6 +27,12 @@ thresholds:
   # Toxicity judge score (lower = safer).
   toxicity_median: 0.05
   toxicity_max: 0.2
+  # Memory (Tier B, Session 5) — LTM fact extraction + cross-thread round-trip.
+  memory_extract_precision: 0.80
+  memory_entity_recall: 0.80
+  memory_cross_thread_roundtrip: 1.0
+  # Blog (Tier B, Session 5) — structural validity of the blog_output dict.
+  blog_structure_pass_rate: 1.0
   # Operational: end-to-end p95 latency per route (PRD §6).
   latency_e2e_p95:
     chat: 5

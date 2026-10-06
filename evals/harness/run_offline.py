@@ -10,10 +10,11 @@ Subcommands:
     retriever   Stub — not implemented yet
     generator   Stub — not implemented yet
     rag-qa      RAG QA triad eval (end-to-end pipeline)
-    application Stub — not implemented yet
-    safety      Stub — not implemented yet
-    blog        Stub — not implemented yet
-    memory      Stub — not implemented yet
+    application Application G-Eval (full graph + synthesizer prebuilt)
+    safety      Safety probes through the real graph (gates)
+    blog        Blog writer graph turns + structure + G-Eval
+    memory      LTM fact extraction + cross-thread round-trip
+    baseline    Aggregate evals/results/*_tierb.json into baseline.json
 
 Options:
     --limit N       Limit number of rows to process
@@ -60,6 +61,10 @@ except ImportError:
 import os
 
 os.environ["QDRANT_URL"] = ""
+os.environ["LANGCHAIN_TRACING_V2"] = "false"
+os.environ.pop("LANGCHAIN_API_KEY", None)
+# Tier B memory isolation: keep eval LTM writes out of the real ltm_indexes/ tree.
+os.environ["LTM_INDEX_DIR"] = str(PROJECT_ROOT / "evals" / "results" / "tierb_ltm")
 
 from evals.config import load_config
 from evals.harness.metrics import (
@@ -69,6 +74,20 @@ from evals.harness.metrics import (
     router_accuracy,
 )
 from evals.harness.report import print_summary, write_report
+from evals.harness.tierb_runners import (
+    build_baseline,
+    compare_run_after_run,
+    load_application_dataset,
+    load_blog_dataset,
+    load_memory_dataset,
+    load_safety_dataset,
+    run_application_evaluation,
+    run_blog_evaluation,
+    run_compare_only,
+    run_memory_evaluation,
+    run_safety_evaluation,
+    write_tierb_report,
+)
 
 # Try to import the router; fail gracefully if backend isn't available
 try:
@@ -1101,12 +1120,7 @@ def run_ragqa_evaluation(
 # Stub subcommands
 # ---------------------------------------------------------------------------
 
-STUB_COMMANDS = {
-    "application",
-    "safety",
-    "blog",
-    "memory",
-}
+STUB_COMMANDS: set[str] = set()
 
 
 def run_stub(command: str, args: argparse.Namespace) -> dict[str, Any]:
@@ -1167,6 +1181,13 @@ def build_parser() -> argparse.ArgumentParser:
         description="AgentFlow Tier B offline evaluation harness",
     )
 
+    parser.add_argument(
+        "--compare",
+        type=Path,
+        default=argparse.SUPPRESS,
+        help="Compare results against a baseline report",
+    )
+
     subparsers = parser.add_subparsers(dest="command", help="Evaluation subcommand")
 
     # Router subcommand (inherits global options)
@@ -1205,6 +1226,33 @@ def build_parser() -> argparse.ArgumentParser:
         help="Run RAG QA pipeline triad evaluation (end-to-end graph runs)",
     )
 
+    # Session 5 subcommands (implemented in harness/tierb_runners.py)
+    subparsers.add_parser(
+        "application",
+        parents=[parent],
+        help="Run application G-Eval (full graph + synthesizer prebuilt)",
+    )
+    subparsers.add_parser(
+        "safety",
+        parents=[parent],
+        help="Run safety probes through the real graph (gates)",
+    )
+    subparsers.add_parser(
+        "memory",
+        parents=[parent],
+        help="Run LTM fact extraction + cross-thread round-trip",
+    )
+    subparsers.add_parser(
+        "blog",
+        parents=[parent],
+        help="Run blog writer graph turns + structure + G-Eval",
+    )
+    subparsers.add_parser(
+        "baseline",
+        parents=[parent],
+        help="Aggregate evals/results/*_tierb.json into baseline.json",
+    )
+
     return parser
 
 
@@ -1212,9 +1260,13 @@ def main(argv: list[str] | None = None) -> int:
     """Main entry point."""
     parser = build_parser()
     args = parser.parse_args(argv)
+    compare_path = getattr(args, "compare", None)
 
     # If no command given, show help
     if args.command is None:
+        if compare_path is not None:
+            out_dir = getattr(args, "out", None) or PROJECT_ROOT / "evals" / "results"
+            return run_compare_only(compare_path, out_dir)
         parser.print_help()
         return 0
 
@@ -1282,6 +1334,25 @@ def main(argv: list[str] | None = None) -> int:
             print("  4. Score triad: contextual_relevancy, faithfulness, answer_relevancy")
             print("  5. Write JSON + Markdown report to evals/results/")
             print("  6. Clean up scratch DB and FAISS indexes")
+        elif args.command in {"application", "safety", "memory", "blog"}:
+            loaders = {
+                "application": load_application_dataset,
+                "safety": load_safety_dataset,
+                "memory": load_memory_dataset,
+                "blog": load_blog_dataset,
+            }
+            rows = loaders[args.command]()
+            sliced = rows[args.offset:]
+            if args.limit:
+                sliced = sliced[:args.limit]
+            print(f"\n{args.command} dataset: {len(rows)} total rows, "
+                  f"will process {len(sliced)} rows")
+            print("\nPlan:")
+            print("  1. Run real graph turns (synthesizer prebuilt for synthesizer rows)")
+            print("  2. Score with hand-rolled judges + deterministic gates")
+            print("  3. Write JSON + Markdown report to evals/results/")
+        elif args.command == "baseline":
+            print("\nPlan: aggregate evals/results/*_tierb.json into baseline.json")
         else:
             print("\nStatus: not_implemented (stub)")
 
@@ -1476,6 +1547,70 @@ def main(argv: list[str] | None = None) -> int:
         if sc.get("groq_quota", 0) > 0:
             print(f"\n[QUOTA] Groq quota exhausted on {sc['groq_quota']} row(s).", file=sys.stderr)
 
+        return 0
+
+    elif args.command in ("application", "safety", "memory", "blog"):
+        loaders = {
+            "application": load_application_dataset,
+            "safety": load_safety_dataset,
+            "memory": load_memory_dataset,
+            "blog": load_blog_dataset,
+        }
+        runners = {
+            "application": run_application_evaluation,
+            "safety": run_safety_evaluation,
+            "memory": run_memory_evaluation,
+            "blog": run_blog_evaluation,
+        }
+        rows = loaders[args.command]()
+        print(f"Loaded {len(rows)} {args.command} evaluation rows")
+
+        results = runners[args.command](
+            rows,
+            limit=args.limit,
+            offset=args.offset,
+            resume=args.resume,
+        )
+
+        output_dir = args.out or PROJECT_ROOT / "evals" / "results"
+        json_path, md_path = write_tierb_report(
+            name=f"{args.command}_tierb",
+            results=results,
+            output_dir=output_dir,
+        )
+
+        print("\nReports written:")
+        print(f"  JSON: {json_path}")
+        print(f"  Markdown: {md_path}")
+
+        op = results.get("operational", {})
+        if op.get("tavily_calls"):
+            print(f"  Tavily search calls this run: {op['tavily_calls']}")
+        graph_tokens = op.get("graph_tokens")
+        if isinstance(graph_tokens, dict) and graph_tokens.get("calls"):
+            print(f"  In-graph LLM tokens: {graph_tokens.get('total', 0):,} "
+                  f"({graph_tokens.get('calls', 0)} calls)")
+
+        if compare_path is not None:
+            compare_run_after_run(compare_path, output_dir, args.command)
+
+        if results.get("operational", {}).get("error_count", 0) > 0:
+            print("\n[NOTE] Errors occurred during evaluation. "
+                  "Check the report for details.", file=sys.stderr)
+
+        return 0
+
+    elif args.command == "baseline":
+        output_dir = args.out or PROJECT_ROOT / "evals" / "results"
+        baseline = build_baseline(output_dir)
+        out_path = output_dir / "baseline.json"
+        with open(out_path, "w", encoding="utf-8") as handle:
+            json.dump(baseline, handle, indent=2, ensure_ascii=False)
+        print(f"Baseline written: {out_path}")
+        print(f"  Runs aggregated: {', '.join(sorted(baseline['runs'].keys()))}")
+        print(f"  Metrics captured: {len(baseline['metrics'])}")
+        if compare_path is not None:
+            run_compare_only(compare_path, output_dir)
         return 0
 
     elif args.command in STUB_COMMANDS:
