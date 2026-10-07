@@ -25,6 +25,18 @@ jobs:
       run: ruff check backend/ tests/ evals/harness/ evals/datasets/ evals/online/
     - name: Type check (mypy)
       run: mypy backend/ --ignore-missing-imports
+    - name: Validate eval datasets (deterministic — stdlib only)
+      # JSON/kind/required-field/dedupe checks + a thresholds: sanity check on
+      # evals/config.yaml. Pure stdlib, no APIs, fails fast on a bad dataset.
+      run: python evals/harness/validate_datasets.py
+
+    - name: Eval harness smoke (dry-run — zero API cost)
+      # Imports the harness and prints the top-level plan for every subcommand.
+      # Catches import-time breakage without spending a single token.
+      run: python evals/harness/run_offline.py --dry-run
+      env:
+        PYTHONPATH: .
+
     - name: Tier A (deterministic — zero LLM/network, blocks merge)
       run: pytest -m "tier_a" -q --tb=short
       env:

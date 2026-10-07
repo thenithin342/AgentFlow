@@ -181,6 +181,8 @@ Sized to run within the free-tier quota (~one full run/day).
 ### Phase 3 — CI gates
 
 - Tier A on every push/PR — **blocks** merge.
+- Fast PR smoke gate (runs before Tier A, zero API cost): `validate_datasets.py` (stdlib JSON/schema/dedupe checks + a `thresholds:` sanity scan) and `run_offline.py --dry-run` (imports the harness and prints the plan for every subcommand) — catches dataset and harness-import regressions without spending a token.
+- `run_offline.py` supports a top-level `--dry-run` (no subcommand) in addition to the per-subcommand form.
 - Tier B scheduled nightly (or `workflow_dispatch`) using existing `GROQ_API_KEY` / `TAVILY_API_KEY` / `GOOGLE_API_KEY` secrets — report-only first, then gated on router accuracy + triad after baselines stabilize.
 
 ### Phase 4 — Online evals
@@ -222,7 +224,8 @@ Sized to run within the free-tier quota (~one full run/day).
 - [x] Tier A deterministic suite, green in CI, blocks merge (21 base tests + expanded router/format/security edge cases; explicit tier_a CI step; ruff covers evals/; coverage floor 55%; audited 2026-09-15, gaps fixed 2026-10-03)
 - [x] Tier B batch harness + baselines + reports (Session 5: all 8 subcommands in `evals/harness/run_offline.py` — router, retriever, generator, rag-qa, application, safety, memory, blog; `evals/results/baseline.json` + `--compare` per-metric regression diff)
 - [x] DeepEval/G-Eval judge wiring on Groq + Gemini fallback (Session 1 decision: FALLBACK hand-rolled judges in `evals/harness/llm_judge.py`, pinned `openai/gpt-oss-20b` on Groq; covers faithfulness, answer/contextual relevancy, G-Eval 1–5, toxicity — the DeepEval spike was not needed because the fallback covers every judge)
-- [ ] CI job for Tier A (push/PR) and Tier B (nightly / workflow_dispatch)
+- [x] Fast PR smoke gate + harness unit suite (Phase 3 Session 1: dataset-validate + dry-run steps in `ci.yml`; `tests/test_eval_harness.py` — 34 `tier_a` unit tests covering `metrics.py`, judge parsing/token accounting, report writers and the `run_offline.py` CLI parser; zero LLM/network)
+- [ ] CI job for Tier B (nightly / workflow_dispatch)
 - [ ] LangSmith online runner replacing the dummy eval
 - [ ] Live black-box API suite (SSE contract, TTFT, p95, RAG round-trip, review, auth)
 - [ ] Online monitors (success/error, fallback, timeout, latency, cost)

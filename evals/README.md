@@ -81,6 +81,29 @@ $env:LANGCHAIN_TRACING_V2='false'; $env:LANGCHAIN_API_KEY=''
 python -m pytest tests/test_tier_a_*.py -q
 ```
 
+## How to run (Phase 3 — fast PR smoke gate)
+
+The `backend` CI job runs two zero-cost checks *before* pytest, so dataset and
+harness-import regressions fail the PR without touching an API:
+
+```bash
+# 1. Dataset validation — stdlib only; exits non-zero on any violation
+python evals/harness/validate_datasets.py
+
+# 2. Harness smoke test — imports every harness module and prints the plan
+#    for all 8 subcommands; makes zero LLM calls
+PYTHONPATH=. python evals/harness/run_offline.py --dry-run
+```
+
+`--dry-run` also works per-subcommand for a dataset-sized plan
+(`run_offline.py router --dry-run` reports how many rows would be processed).
+
+`tests/test_eval_harness.py` (34 `tier_a` unit tests) covers the pure harness
+internals — `metrics.py` scoring, judge JSON/token parsing, the report writers
+and the `run_offline.py` CLI parser — with no LLM or network calls. It is
+collected by both `pytest -m "tier_a"` and the `-m "not eval"` coverage run, and
+does not change the `--cov=backend` measurement.
+
 ## How to run (Phase 2 — Tier B)
 
 Tier B runs the golden datasets through the real Groq/Gemini stack. Always run

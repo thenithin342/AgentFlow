@@ -1122,6 +1122,33 @@ def run_ragqa_evaluation(
 
 STUB_COMMANDS: set[str] = set()
 
+# High-level plans printed by the top-level `--dry-run` (no subcommand given).
+# Static text only — no dataset loading, no LLM, no network.
+DRY_RUN_PLANS: tuple[tuple[str, str], ...] = (
+    ("router", "score evals/datasets/router.jsonl via _route_for_message (accuracy, F1, confusion matrix)"),
+    ("retriever", "embed each source_doc corpus PDF, retrieve top-k, score recall@k / precision@k"),
+    ("generator", "judge evals/datasets/generator.jsonl with faithfulness + answer relevancy"),
+    ("rag-qa", "ingest reference text, run one full graph turn, score the RAG triad"),
+    ("application", "run real graph turns on evals/datasets/application.jsonl + G-Eval scoring"),
+    ("safety", "drive evals/datasets/safety.jsonl through the real graph and run the safety gates"),
+    ("memory", "LTM fact extraction + cross-thread round-trip over evals/datasets/memory.jsonl"),
+    ("blog", "blog writer graph turns + structure check + G-Eval over evals/datasets/blog.jsonl"),
+    ("baseline", "aggregate evals/results/*_tierb.json into baseline.json (no LLM calls)"),
+)
+
+
+def print_root_dry_run() -> None:
+    """Print a high-level plan for every subcommand without running anything."""
+    print("=== DRY RUN — No LLM calls will be made ===")
+    print()
+    print("No subcommand given — showing the plan for every available subcommand:")
+    print()
+    for name, plan in DRY_RUN_PLANS:
+        print(f"  {name:<12} {plan}")
+    print()
+    print("Add a subcommand for a dataset-sized plan (e.g. `router --dry-run`),")
+    print("or drop --dry-run to execute for real.")
+
 
 def run_stub(command: str, args: argparse.Namespace) -> dict[str, Any]:
     """Return a stub result for unimplemented subcommands."""
@@ -1173,6 +1200,7 @@ def build_parser() -> argparse.ArgumentParser:
     parent.add_argument(
         "--dry-run",
         action="store_true",
+        default=argparse.SUPPRESS,
         help="Print plan without making LLM calls",
     )
 
@@ -1186,6 +1214,16 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=argparse.SUPPRESS,
         help="Compare results against a baseline report",
+    )
+
+    # Top-level --dry-run so `run_offline.py --dry-run` (no subcommand) works.
+    # SUPPRESS mirrors --compare: an explicit subcommand still supplies its own
+    # default, and the bare form is read with getattr(args, "dry_run", False).
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Print a high-level plan for every subcommand without running them",
     )
 
     subparsers = parser.add_subparsers(dest="command", help="Evaluation subcommand")
@@ -1253,6 +1291,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Aggregate evals/results/*_tierb.json into baseline.json",
     )
 
+    parser.set_defaults(dry_run=False)
     return parser
 
 
@@ -1264,6 +1303,9 @@ def main(argv: list[str] | None = None) -> int:
 
     # If no command given, show help
     if args.command is None:
+        if getattr(args, "dry_run", False):
+            print_root_dry_run()
+            return 0
         if compare_path is not None:
             out_dir = getattr(args, "out", None) or PROJECT_ROOT / "evals" / "results"
             return run_compare_only(compare_path, out_dir)

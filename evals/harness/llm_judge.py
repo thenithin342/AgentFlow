@@ -460,12 +460,21 @@ class JudgeTokenTracker:
             self._calls += 1
 
     def record_direct(self, tokens: dict[str, int]) -> None:
-        """Record token usage directly (for tests / mocks)."""
+        """Record token usage directly (for tests / mocks).
+
+        The default total is the *per-call* input + output, matching
+        ``record()``. Computing it from the running counters (the previous
+        behaviour) added the cumulative sum on every call that omitted
+        ``total``, inflating the total for multi-call trackers.
+        """
+        delta_in = int(tokens.get("input", 0))
+        delta_out = int(tokens.get("output", 0))
+        delta_total = int(tokens.get("total", delta_in + delta_out))
         self._ensure_lock()
         with self._lock:  # type: ignore[union-attr]
-            self._input += int(tokens.get("input", 0))
-            self._output += int(tokens.get("output", 0))
-            self._total += int(tokens.get("total", self._input + self._output))
+            self._input += delta_in
+            self._output += delta_out
+            self._total += delta_total
             self._calls += 1
 
     @property
