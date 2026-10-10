@@ -51,7 +51,11 @@ agentflow.egg-info/
 railway.toml
 nixpacks.toml
 # Eval run reports (EVAL_PLAN.md Phase 2+); datasets and harness stay tracked.
-evals/results/
+# baseline.json is the one exception: it is the authoritative regression target
+# the Tier B workflow compares every run against, so it must travel with the
+# repo. Everything else under results/ is per-run output.
+evals/results/*
+!evals/results/baseline.json
 
 # Development / agent prompt instruction templates
 prompts/

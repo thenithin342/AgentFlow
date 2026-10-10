@@ -24,6 +24,7 @@ Design notes
 from __future__ import annotations
 
 import json
+import os
 import re
 import statistics
 import sys
@@ -56,6 +57,10 @@ RUN_FILES = (
     "memory_tierb",
     "blog_tierb",
 )
+
+# CLI subcommand -> result-file run key (the ``_tierb`` suffix is stripped).
+# Only ``rag-qa`` differs from its CLI name: its results land in ragqa_tierb.json.
+_CLI_TO_RUN_KEY = {"rag-qa": "ragqa"}
 
 # Metrics where a *lower* value is better (toxicity / leakage / error rates).
 _LOWER_IS_BETTER = frozenset({
@@ -1322,6 +1327,9 @@ def run_compare_only(baseline_path: Path, results_dir: Path) -> int:
     with open(out, "w", encoding="utf-8") as handle:
         json.dump(compare, handle, indent=2, ensure_ascii=False)
     print(f"\nComparison written: {out}")
+    if not compare.get("metric_deltas"):
+        print("ERROR: No metrics found to compare against baseline.", file=sys.stderr)
+        return 1
     return 0 if compare.get("clean") else 1
 
 
@@ -1339,7 +1347,96 @@ def compare_run_after_run(baseline_path: Path, results_dir: Path, run_key: str) 
     with open(out, "w", encoding="utf-8") as handle:
         json.dump(compare, handle, indent=2, ensure_ascii=False)
     print(f"\nComparison written: {out}")
+    if not compare.get("metric_deltas"):
+        print(f"ERROR: No metrics found for '{run_key}' to compare against baseline.", file=sys.stderr)
+        return 1
     return 0 if compare.get("clean") else 1
+
+
+# ---------------------------------------------------------------------------
+def run_key_for_cli(subcommand: str) -> str:
+    """Map a CLI subcommand name to its baseline run key (e.g. rag-qa -> ragqa)."""
+    return _CLI_TO_RUN_KEY.get(subcommand, subcommand)
+
+
+def render_compare_markdown(compare: dict[str, Any], *, git_sha: str = "") -> str:
+    """Render a ``compare_to_baseline`` payload as GitHub-flavored Markdown.
+
+    Feeds both the Actions Job Summary (``$GITHUB_STEP_SUMMARY``) and the
+    ``compare_summary.md`` artifact so a failing run is readable without
+    downloading JSON.
+    """
+    deltas: dict[str, Any] = compare.get("metric_deltas", {}) or {}
+    regressions = list(compare.get("regressions", []) or [])
+    n_total = len(deltas)
+    n_regressions = len(regressions)
+    n_passing = n_total - n_regressions
+
+    lines = [
+        "# Tier B Evaluation — Baseline Comparison",
+        "",
+        f"**Timestamp:** {compare.get('current_timestamp') or _now_iso()}",
+        f"**Git SHA:** `{git_sha or 'unknown'}`",
+        f"**Baseline:** {compare.get('baseline_file', 'baseline')} "
+        f"(captured {compare.get('baseline_timestamp') or 'unknown'})",
+        f"**Metrics evaluated:** {n_total}",
+        f"**Passing:** {n_passing} | **Regressions:** {n_regressions}",
+        "",
+        "| Metric | Baseline | Current | Delta | Status |",
+        "|---|---|---|---|---|",
+    ]
+
+    if deltas:
+        for key, info in deltas.items():
+            status = "❌ REGRESSION" if info.get("regression") else "✅ OK"
+            lines.append(
+                f"| {key} | {float(info['baseline']):.4f} | "
+                f"{float(info['current']):.4f} | {float(info['delta']):+.4f} | {status} |"
+            )
+    else:
+        lines.append("| _(no comparable metrics)_ | — | — | — | — |")
+
+    lines.append("")
+    if n_regressions:
+        lines.append(
+            f"**Result:** ❌ {n_regressions} regression(s) detected — gate rule "
+            f"`delta < {_REGRESSION_DELTA}` (or `delta > +{abs(_REGRESSION_DELTA)}` for "
+            "lower-is-better metrics)."
+        )
+    else:
+        lines.append("**Result:** ✅ No regressions vs baseline.")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def emit_regression_annotations(compare: dict[str, Any]) -> list[str]:
+    """Print GitHub Actions ``::error::`` annotations for each regression."""
+    deltas: dict[str, Any] = compare.get("metric_deltas", {}) or {}
+    annotations: list[str] = []
+    for key in compare.get("regressions", []) or []:
+        delta = deltas.get(key, {}).get("delta")
+        delta_text = f"{float(delta):+.4f}" if isinstance(delta, (int, float)) else "n/a"
+        line = f"::error::Regression detected in metric: {key} (delta: {delta_text})"
+        annotations.append(line)
+        print(line)
+    return annotations
+
+
+def write_step_summary(markdown: str, summary_path: str | None = None) -> bool:
+    """Append *markdown* to the Actions Job Summary.
+
+    Returns ``True`` when a summary file was written. Falls back to
+    ``$GITHUB_STEP_SUMMARY``; returns ``False`` outside CI so the caller can
+    print to stdout instead.
+    """
+    path = summary_path or os.environ.get("GITHUB_STEP_SUMMARY")
+    if not path:
+        return False
+    with open(path, "a", encoding="utf-8") as handle:
+        handle.write(markdown)
+        if not markdown.endswith("\n"):
+            handle.write("\n")
+    return True
 
 
 # ---------------------------------------------------------------------------

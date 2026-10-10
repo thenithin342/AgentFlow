@@ -22,6 +22,7 @@ from types import SimpleNamespace
 import pytest
 
 from evals.harness import metrics
+from evals.harness.compare_summary import locate_compare_file
 from evals.harness.llm_judge import (
     JudgeTokenTracker,
     _extract_tokens,
@@ -29,7 +30,15 @@ from evals.harness.llm_judge import (
 )
 from evals.harness.mocks import FakeLLMResponse
 from evals.harness.report import compare_reports, write_report
-from evals.harness.tierb_runners import compare_to_baseline
+from evals.harness.tierb_runners import (
+    compare_run_after_run,
+    compare_to_baseline,
+    emit_regression_annotations,
+    render_compare_markdown,
+    run_compare_only,
+    run_key_for_cli,
+    write_step_summary,
+)
 
 pytestmark = pytest.mark.tier_a
 
@@ -423,4 +432,163 @@ def test_dry_run_flag_before_subcommand(run_offline_module, capsys):
     out = capsys.readouterr().out
     assert "DRY RUN" in out
     assert "router.jsonl" in out
+
+
+def test_build_parser_parses_top_level_compare_run(run_offline_module):
+    args = run_offline_module.build_parser().parse_args(
+        ["--compare", "evals/results/baseline.json", "--compare-run", "router"]
+    )
+    assert args.command is None
+    assert args.compare == Path("evals/results/baseline.json")
+    assert args.compare_run == "router"
+
+
+# ---------------------------------------------------------------------------
+# evals/harness/tierb_runners.py — Job Summary rendering (Phase 3 Session 3)
+# ---------------------------------------------------------------------------
+
+def _compare_payload(clean: bool) -> dict:
+    """Minimal compare.json payload with one flat and one regressing metric."""
+    return {
+        "baseline_file": "baseline",
+        "baseline_timestamp": "2026-01-01T00:00:00+00:00",
+        "current_timestamp": "2026-01-02T00:00:00+00:00",
+        "metric_deltas": {
+            "router.router_accuracy": {
+                "baseline": 0.9773,
+                "current": 0.9773,
+                "delta": 0.0,
+                "regression": False,
+            },
+            "safety.scope_refusals": {
+                "baseline": 0.75,
+                "current": 0.75 if clean else 0.70,
+                "delta": 0.0 if clean else -0.05,
+                "regression": not clean,
+            },
+        },
+        "regressions": [] if clean else ["safety.scope_refusals"],
+        "clean": clean,
+    }
+
+
+def test_render_compare_markdown_header_and_table():
+    markdown = render_compare_markdown(_compare_payload(clean=True), git_sha="abc1234")
+    assert "| Metric | Baseline | Current | Delta | Status |" in markdown
+    assert "| router.router_accuracy | 0.9773 | 0.9773 | +0.0000 | ✅ OK |" in markdown
+    assert "**Metrics evaluated:** 2" in markdown
+    assert "**Passing:** 2 | **Regressions:** 0" in markdown
+    assert "abc1234" in markdown
+    assert "No regressions vs baseline." in markdown
+    assert "REGRESSION" not in markdown
+
+
+def test_render_compare_markdown_marks_regression_and_counts():
+    markdown = render_compare_markdown(_compare_payload(clean=False))
+    assert "| safety.scope_refusals | 0.7500 | 0.7000 | -0.0500 | ❌ REGRESSION |" in markdown
+    assert "**Passing:** 1 | **Regressions:** 1" in markdown
+    assert "1 regression(s) detected" in markdown
+
+
+def test_emit_regression_annotations_prints_one_error_per_regression(capsys):
+    annotations = emit_regression_annotations(_compare_payload(clean=False))
+    assert annotations == [
+        "::error::Regression detected in metric: safety.scope_refusals (delta: -0.0500)"
+    ]
+    out = capsys.readouterr().out
+    assert "::error::Regression detected in metric: safety.scope_refusals" in out
+
+
+def test_run_key_for_cli_maps_rag_qa_only():
+    assert run_key_for_cli("rag-qa") == "ragqa"
+    assert run_key_for_cli("router") == "router"
+    assert run_key_for_cli("application") == "application"
+
+
+def test_write_step_summary_appends_and_adds_trailing_newline(tmp_path):
+    summary = tmp_path / "summary.md"
+    assert write_step_summary("hello", str(summary)) is True
+    assert write_step_summary("# second", str(summary)) is True
+    assert summary.read_text(encoding="utf-8") == "hello\n# second\n"
+
+
+def test_write_step_summary_returns_false_without_target(monkeypatch):
+    monkeypatch.delenv("GITHUB_STEP_SUMMARY", raising=False)
+    assert write_step_summary("# nowhere to go") is False
+
+
+def test_write_step_summary_uses_github_env(monkeypatch, tmp_path):
+    summary = tmp_path / "env_summary.md"
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
+    assert write_step_summary("body") is True
+    assert summary.read_text(encoding="utf-8") == "body\n"
+
+
+def test_compare_run_after_run_writes_single_run_file(tmp_path):
+    baseline = {
+        "name": "baseline",
+        "timestamp": "t0",
+        "metrics": {"router.router_accuracy": 0.9, "safety.scope_refusals": 1.0},
+    }
+    (tmp_path / "baseline.json").write_text(json.dumps(baseline), encoding="utf-8")
+    (tmp_path / "router_tierb.json").write_text(
+        json.dumps({"thresholds": {"router_accuracy": {"value": 0.9}}}), encoding="utf-8"
+    )
+
+    rc = compare_run_after_run(tmp_path / "baseline.json", tmp_path, "router")
+
+    assert rc == 0
+    payload = json.loads((tmp_path / "compare_router.json").read_text(encoding="utf-8"))
+    # Only the router run's metrics are compared, never the whole baseline.
+    assert set(payload["metric_deltas"]) == {"router.router_accuracy"}
+    assert payload["clean"] is True
+
+
+def test_compare_run_after_run_returns_nonzero_on_regression(tmp_path):
+    baseline = {
+        "name": "baseline",
+        "timestamp": "t0",
+        "metrics": {"router.router_accuracy": 0.99},
+    }
+    (tmp_path / "baseline.json").write_text(json.dumps(baseline), encoding="utf-8")
+    (tmp_path / "router_tierb.json").write_text(
+        json.dumps({"thresholds": {"router_accuracy": {"value": 0.5}}}), encoding="utf-8"
+    )
+
+    rc = compare_run_after_run(tmp_path / "baseline.json", tmp_path, "router")
+
+    assert rc == 1
+    payload = json.loads((tmp_path / "compare_router.json").read_text(encoding="utf-8"))
+    assert payload["clean"] is False
+
+
+def test_locate_compare_file_prefers_single_run_then_falls_back(tmp_path):
+    assert locate_compare_file(tmp_path, "all") is None
+
+    (tmp_path / "compare.json").write_text("{}", encoding="utf-8")
+    assert locate_compare_file(tmp_path, "all") == tmp_path / "compare.json"
+    assert locate_compare_file(tmp_path, "router") == tmp_path / "compare.json"
+
+    (tmp_path / "compare_router.json").write_text("{}", encoding="utf-8")
+    assert locate_compare_file(tmp_path, "router") == tmp_path / "compare_router.json"
+
+
+def test_locate_compare_file_maps_rag_qa_to_ragqa(tmp_path):
+    (tmp_path / "compare_ragqa.json").write_text("{}", encoding="utf-8")
+    assert locate_compare_file(tmp_path, "rag-qa") == tmp_path / "compare_ragqa.json"
+
+
+def test_compare_run_after_run_returns_nonzero_when_no_metrics_found(tmp_path):
+    baseline = {"metrics": {"router.router_accuracy": 0.99}}
+    (tmp_path / "baseline.json").write_text(json.dumps(baseline), encoding="utf-8")
+    rc = compare_run_after_run(tmp_path / "baseline.json", tmp_path, "router")
+    assert rc == 1
+
+
+def test_run_compare_only_returns_nonzero_when_no_metrics_found(tmp_path):
+    baseline = {"metrics": {"router.router_accuracy": 0.99}}
+    (tmp_path / "baseline.json").write_text(json.dumps(baseline), encoding="utf-8")
+    rc = run_compare_only(tmp_path / "baseline.json", tmp_path)
+    assert rc == 1
+
 

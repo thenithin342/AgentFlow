@@ -14,11 +14,9 @@ from backend.validation import validate_thread_id
 def get_rate_limit_key(request: Request) -> str:
     """Use authenticated user ID as rate limit key when available.
     Falls back to forwarded IP → real IP for unauthenticated requests."""
-    # Try to get user from request state (set by auth middleware)
     user = getattr(request.state, "user", None)
-    if user and hasattr(user, "username"):
+    if user and hasattr(user, "username") and user.username != "anonymous":
         return f"user:{user.username}"
-    # Fall back to forwarded IP (handles proxy)
     forwarded_for = request.headers.get("X-Forwarded-For")
     if forwarded_for:
         return forwarded_for.split(",")[0].strip()

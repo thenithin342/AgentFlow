@@ -225,7 +225,7 @@ Sized to run within the free-tier quota (~one full run/day).
 - [x] Tier B batch harness + baselines + reports (Session 5: all 8 subcommands in `evals/harness/run_offline.py` — router, retriever, generator, rag-qa, application, safety, memory, blog; `evals/results/baseline.json` + `--compare` per-metric regression diff)
 - [x] DeepEval/G-Eval judge wiring on Groq + Gemini fallback (Session 1 decision: FALLBACK hand-rolled judges in `evals/harness/llm_judge.py`, pinned `openai/gpt-oss-20b` on Groq; covers faithfulness, answer/contextual relevancy, G-Eval 1–5, toxicity — the DeepEval spike was not needed because the fallback covers every judge)
 - [x] Fast PR smoke gate + harness unit suite (Phase 3 Session 1: dataset-validate + dry-run steps in `ci.yml`; `tests/test_eval_harness.py` — 34 `tier_a` unit tests covering `metrics.py`, judge parsing/token accounting, report writers and the `run_offline.py` CLI parser; zero LLM/network)
-- [ ] CI job for Tier B (nightly / workflow_dispatch)
+- [x] CI job for Tier B (nightly / workflow_dispatch) — Phase 3 Session 3: `.github/workflows/tier_b_eval.yml` runs the 8 subcommands sequentially, diffs fresh results against the checked-in `evals/results/baseline.json`, fails on any metric regression (`delta < -0.05`, or `> +0.05` for lower-is-better metrics) via `run_offline.py --compare`, and publishes a Markdown table + `::error::` annotations to the Job Summary through `evals/harness/compare_summary.py`
 - [ ] LangSmith online runner replacing the dummy eval
 - [ ] Live black-box API suite (SSE contract, TTFT, p95, RAG round-trip, review, auth)
 - [ ] Online monitors (success/error, fallback, timeout, latency, cost)

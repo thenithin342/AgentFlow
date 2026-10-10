@@ -1,0 +1,230 @@
+{
+  "name": "baseline",
+  "timestamp": "2026-10-06T18:14:31.231099+00:00",
+  "git_sha": "7f2008e9ede9f78aa9f715d9f246f9857219c974",
+  "runs": {
+    "router": {
+      "timestamp": "2026-10-05T05:20:21.524412+00:00",
+      "git_sha": "7657cfa5594270340415b407e0b91859d20976d6",
+      "aggregate": {
+        "accuracy": 0.9772727272727273,
+        "total_rows": 44,
+        "correct": 43,
+        "incorrect": 1
+      },
+      "thresholds": {
+        "router_accuracy": {
+          "value": 0.9772727272727273,
+          "threshold": 0.9,
+          "passed": true
+        }
+      }
+    },
+    "retriever": {
+      "timestamp": "2026-10-05T09:10:04.954452+00:00",
+      "git_sha": "f2b21c02b87bc510c5fbdc91e73005955528a35f",
+      "aggregate": {
+        "mean_recall": 1.0,
+        "mean_precision": 0.25,
+        "n_rows": 12,
+        "n_below_threshold": 12
+      },
+      "thresholds": {
+        "contextual_recall": {
+          "value": 1.0,
+          "threshold": 0.85,
+          "passed": true
+        },
+        "contextual_precision": {
+          "value": 0.25,
+          "threshold": 0.8,
+          "passed": false
+        }
+      }
+    },
+    "generator": {
+      "timestamp": "2026-10-05T09:21:29.745184+00:00",
+      "git_sha": "f2b21c02b87bc510c5fbdc91e73005955528a35f",
+      "aggregate": {
+        "mean_faithfulness": 1.0,
+        "mean_answer_relevancy": 0.99,
+        "n_rows": 20,
+        "n_below_threshold": 1
+      },
+      "thresholds": {
+        "faithfulness": {
+          "value": 1.0,
+          "threshold": 0.9,
+          "passed": true
+        },
+        "answer_relevancy": {
+          "value": 0.99,
+          "threshold": 0.9,
+          "passed": true
+        }
+      }
+    },
+    "ragqa": {
+      "timestamp": "2026-10-06T12:27:53.449418+00:00",
+      "git_sha": "86b1420cb75edf83722b343804abdfa0da21f0ae",
+      "aggregate": {
+        "mean_contextual_relevancy": 0.9520000000000001,
+        "mean_faithfulness": 0.7084813333333334,
+        "mean_answer_relevancy": 0.948,
+        "n_rows": 25,
+        "n_below_threshold": 12
+      },
+      "thresholds": {
+        "contextual_relevancy": {
+          "value": 0.9520000000000001,
+          "threshold": 0.8,
+          "passed": true
+        },
+        "faithfulness": {
+          "value": 0.7084813333333334,
+          "threshold": 0.9,
+          "passed": false
+        },
+        "answer_relevancy": {
+          "value": 0.948,
+          "threshold": 0.9,
+          "passed": true
+        }
+      }
+    },
+    "application": {
+      "timestamp": "2026-10-06T13:29:52.811924+00:00",
+      "git_sha": "7f2008e9ede9f78aa9f715d9f246f9857219c974",
+      "aggregate": {
+        "mean_g_eval_composite": 4.166666666666666,
+        "n_rows": 20,
+        "n_below_threshold": 4,
+        "n_prebuilt_state_rows": 4,
+        "n_full_graph_rows": 16,
+        "mean_correctness": 4.1,
+        "mean_completeness": 4.2,
+        "mean_style": 4.2
+      },
+      "thresholds": {
+        "g_eval_composite": {
+          "value": 4.166666666666666,
+          "threshold": 4.0,
+          "passed": true
+        }
+      }
+    },
+    "safety": {
+      "timestamp": "2026-10-06T13:25:40.423869+00:00",
+      "git_sha": "7f2008e9ede9f78aa9f715d9f246f9857219c974",
+      "aggregate": {
+        "scope_refusal_rate": 0.75,
+        "n_scope_probes": 4,
+        "n_scope_refused": 3,
+        "leakage_pii_hits": 1,
+        "leakage_protected_hits": 0,
+        "toxicity_median": 0.0,
+        "toxicity_max": 0.0,
+        "n_rows": 12,
+        "n_timeouts": 0
+      },
+      "thresholds": {
+        "scope_refusals": {
+          "value": 0.75,
+          "threshold": 1.0,
+          "passed": false
+        },
+        "leakage_pii_hits": {
+          "value": 1.0,
+          "threshold": 0,
+          "passed": false
+        },
+        "leakage_protected_hits": {
+          "value": 0.0,
+          "threshold": 0,
+          "passed": true
+        },
+        "toxicity_median": {
+          "value": 0.0,
+          "threshold": 0.05,
+          "passed": true
+        },
+        "toxicity_max": {
+          "value": 0.0,
+          "threshold": 0.2,
+          "passed": true
+        }
+      }
+    },
+    "memory": {
+      "timestamp": "2026-10-06T18:13:41.515767+00:00",
+      "git_sha": "7f2008e9ede9f78aa9f715d9f246f9857219c974",
+      "aggregate": {
+        "mean_extract_precision": 0.4375,
+        "mean_entity_recall": 1.0,
+        "cross_thread_roundtrip": 1.0,
+        "n_rows": 8
+      },
+      "thresholds": {
+        "memory_extract_precision": {
+          "value": 0.4375,
+          "threshold": 0.8,
+          "passed": null
+        },
+        "memory_entity_recall": {
+          "value": 1.0,
+          "threshold": 0.8,
+          "passed": true
+        },
+        "memory_cross_thread_roundtrip": {
+          "value": 1.0,
+          "threshold": 1.0,
+          "passed": true
+        }
+      }
+    },
+    "blog": {
+      "timestamp": "2026-10-06T13:33:43.318036+00:00",
+      "git_sha": "7f2008e9ede9f78aa9f715d9f246f9857219c974",
+      "aggregate": {
+        "mean_g_eval_composite": 4.6,
+        "structure_pass_rate": 0.6,
+        "n_structure_ok": 3,
+        "n_rows": 5,
+        "n_below_threshold": 0
+      },
+      "thresholds": {
+        "g_eval_composite": {
+          "value": 4.6,
+          "threshold": 4.0,
+          "passed": true
+        },
+        "blog_structure_pass_rate": {
+          "value": 0.6,
+          "threshold": 1.0,
+          "passed": false
+        }
+      }
+    }
+  },
+  "metrics": {
+    "router.router_accuracy": 0.9772727272727273,
+    "retriever.contextual_recall": 1.0,
+    "retriever.contextual_precision": 0.25,
+    "generator.faithfulness": 1.0,
+    "generator.answer_relevancy": 0.99,
+    "ragqa.contextual_relevancy": 0.9520000000000001,
+    "ragqa.faithfulness": 0.7084813333333334,
+    "ragqa.answer_relevancy": 0.948,
+    "application.g_eval_composite": 4.166666666666666,
+    "safety.scope_refusals": 0.75,
+    "safety.leakage_pii_hits": 1.0,
+    "safety.leakage_protected_hits": 0.0,
+    "safety.toxicity_median": 0.0,
+    "safety.toxicity_max": 0.0,
+    "memory.memory_extract_precision": 0.4375,
+    "memory.memory_entity_recall": 1.0,
+    "memory.memory_cross_thread_roundtrip": 1.0,
+    "blog.g_eval_composite": 4.6,
+    "blog.blog_structure_pass_rate": 0.6
+  }
+}

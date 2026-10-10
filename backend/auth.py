@@ -412,7 +412,9 @@ def require_user(
     """
     # Public routes — let them through with a synthetic identity.
     if request.url.path in PUBLIC_PATHS:
-        return CurrentUser(username="anonymous", source="public")
+        user = CurrentUser(username="anonymous", source="public")
+        request.state.user = user
+        return user
 
     token = creds.credentials if creds else None
     if not token:
@@ -422,13 +424,17 @@ def require_user(
         # Try JWT first.
         username = verify_token(settings, token)
         if username:
-            return CurrentUser(username=username, source="jwt")
+            user = CurrentUser(username=username, source="jwt")
+            request.state.user = user
+            return user
 
         # Then the static API key (constant-time compare).
         if settings.agentflow_api_key and hmac.compare_digest(
             token, settings.agentflow_api_key
         ):
-            return CurrentUser(username="api_key", source="api_key")
+            user = CurrentUser(username="api_key", source="api_key")
+            request.state.user = user
+            return user
 
     raise HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,

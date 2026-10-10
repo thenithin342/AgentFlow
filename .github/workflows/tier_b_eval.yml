@@ -1,0 +1,218 @@
+name: Tier B Evals
+
+# Real-model Tier B batch evaluations (router, retriever, generator, rag-qa,
+# application, safety, memory, blog) plus baseline aggregation.
+#
+# Deliberately separate from ci.yml: this workflow spends LLM tokens, so it must
+# never run on pull requests. PR checks stay 100% free of API cost.
+#
+#   * schedule          - nightly at 02:00 UTC (full run, no --limit)
+#   * workflow_dispatch - manual run, optionally scoped to a single subcommand
+#
+# Subcommands run sequentially in ONE job. A matrix would fire several
+# subcommands at once and exhaust the shared Groq/Gemini quota while racing on
+# evals/results/*.json, so parallel execution is intentionally avoided.
+#
+# After the runs, the job diffs the fresh results against the checked-in
+# baseline (evals/results/baseline.json), fails on any quality regression, and
+# publishes a comparison table to the Actions Job Summary.
+
+on:
+  schedule:
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+    inputs:
+      subcommand:
+        description: 'Tier B subcommand to run'
+        type: choice
+        default: all
+        options:
+          - all
+          - router
+          - retriever
+          - generator
+          - rag-qa
+          - application
+          - safety
+          - memory
+          - blog
+      limit:
+        description: 'Limit rows per subcommand (e.g. 2 for a smoke test). Blank = all rows.'
+        type: string
+        required: false
+        default: ''
+      resume:
+        description: 'Resume from previous results where supported (rag-qa, application)'
+        type: boolean
+        default: true
+      dry_run:
+        description: 'Print the plan without making any LLM calls'
+        type: boolean
+        default: false
+
+# Never let a manual run overlap the nightly run: two concurrent Tier B runs
+# would fight over the same daily API quota and the same result files.
+concurrency:
+  group: tier-b-eval
+  cancel-in-progress: false
+
+env:
+  PYTHONPATH: .
+  # Tier B hygiene: no live Qdrant, no LangSmith tracing (the harness also
+  # enforces these itself at import time; setting them here keeps early steps
+  # honest).
+  QDRANT_URL: ""
+  LANGCHAIN_TRACING_V2: "false"
+
+jobs:
+  tier-b:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+
+      # Forks and unconfigured repos have no GROQ_API_KEY. Warn and skip rather
+      # than failing the workflow; never echo the value.
+      - name: Check for GROQ_API_KEY
+        id: guard
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+        run: |
+          if [ -z "$GROQ_API_KEY" ]; then
+            echo "::warning::GROQ_API_KEY secret is missing. Skipping Tier B evaluations."
+            echo "run_evals=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "run_evals=true" >> "$GITHUB_OUTPUT"
+
+      - name: Run Tier B evaluations (sequential)
+        if: steps.guard.outputs.run_evals == 'true'
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          GROQ_API_KEY_2: ${{ secrets.GROQ_API_KEY_2 }}
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
+        run: |
+          set -euo pipefail
+
+          # On scheduled runs github.event.inputs is empty, so every input needs
+          # a fallback that behaves like a plain full nightly run.
+          SUBCOMMAND="${{ github.event.inputs.subcommand || 'all' }}"
+          LIMIT="${{ github.event.inputs.limit || '' }}"
+          RESUME="${{ github.event.inputs.resume != 'false' }}"
+          DRY_RUN="${{ github.event.inputs.dry_run == 'true' }}"
+
+          echo "subcommand=${SUBCOMMAND} limit=${LIMIT:-<all>} resume=${RESUME} dry_run=${DRY_RUN}"
+
+          echo "::group::Validate eval datasets"
+          python evals/harness/validate_datasets.py
+          echo "::endgroup::"
+
+          run_tier_b() {
+            local name="$1"
+            shift
+            echo "::group::Tier B - ${name}"
+            python evals/harness/run_offline.py "$name" "$@"
+            echo "::endgroup::"
+          }
+
+          EXTRA=""
+          if [ "$RESUME" = "true" ]; then EXTRA="$EXTRA --resume"; fi
+          if [ "$DRY_RUN" = "true" ]; then EXTRA="$EXTRA --dry-run"; fi
+          if [ -n "$LIMIT" ]; then EXTRA="$EXTRA --limit $LIMIT"; fi
+
+          if [ "$SUBCOMMAND" = "all" ]; then
+            # shellcheck disable=SC2086
+            run_tier_b router $EXTRA
+            # shellcheck disable=SC2086
+            run_tier_b retriever $EXTRA
+            # shellcheck disable=SC2086
+            run_tier_b generator $EXTRA
+            # shellcheck disable=SC2086
+            run_tier_b rag-qa $EXTRA
+            # shellcheck disable=SC2086
+            run_tier_b application $EXTRA
+            # shellcheck disable=SC2086
+            run_tier_b safety $EXTRA
+            # shellcheck disable=SC2086
+            run_tier_b memory $EXTRA
+            # shellcheck disable=SC2086
+            run_tier_b blog $EXTRA
+            # NOTE: the `baseline` subcommand is deliberately NOT run here.
+            # evals/results/baseline.json is the authoritative, checked-in
+            # regression target; regenerating it from the current results
+            # before the compare step would compare the run against itself and
+            # never flag a regression. Refresh it on purpose with
+            # `workflow_dispatch` subcommand=baseline (or locally).
+          else
+            # EXTRA is intentionally unquoted so the flags split into arguments.
+            # shellcheck disable=SC2086
+            run_tier_b "$SUBCOMMAND" $EXTRA
+          fi
+
+      # Regression gate: diff the freshly written result files against the
+      # authoritative, checked-in baseline and fail the job when any quality
+      # metric regresses (delta < -0.05, or > +0.05 for lower-is-better
+      # metrics). run_offline.py returns 1 in that case; we capture the code,
+      # close the log group, then propagate it so the step goes red.
+      - name: Compare against baseline
+        id: compare_step
+        if: steps.guard.outputs.run_evals == 'true' && github.event.inputs.dry_run != 'true'
+        run: |
+          set -uo pipefail
+
+          SUBCOMMAND="${{ github.event.inputs.subcommand || 'all' }}"
+          BASELINE="evals/results/baseline.json"
+
+          if [ ! -f "$BASELINE" ]; then
+            echo "::error::Authoritative baseline $BASELINE is missing — cannot enforce the regression gate."
+            exit 1
+          fi
+
+          echo "::group::Compare against baseline (${SUBCOMMAND})"
+          compare_rc=0
+          if [ "$SUBCOMMAND" = "all" ]; then
+            python evals/harness/run_offline.py --compare "$BASELINE" || compare_rc=$?
+          else
+            # Single-subcommand runs compare only their own fresh results
+            # (evals/results/compare_<run>.json).
+            python evals/harness/run_offline.py --compare "$BASELINE" --compare-run "$SUBCOMMAND" || compare_rc=$?
+          fi
+          echo "::endgroup::"
+
+          exit "$compare_rc"
+
+      # if: always() so the Job Summary and ::error:: annotations are written
+      # even when the gate above just failed. This step also exits non-zero on
+      # a regression, so a red gate can never be mistaken for a pass.
+      - name: Publish comparison to Job Summary
+        if: always() && steps.guard.outputs.run_evals == 'true' && github.event.inputs.dry_run != 'true'
+        env:
+          PYTHONPATH: .
+        run: |
+          SUBCOMMAND="${{ github.event.inputs.subcommand || 'all' }}"
+          python evals/harness/compare_summary.py --subcommand "$SUBCOMMAND"
+
+      # if: always() so partial reports survive quota errors and failed steps.
+      - name: Upload Tier B results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tier-b-eval-results-${{ github.run_id }}
+          path: |
+            evals/results/*.json
+            evals/results/*.md
+          if-no-files-found: warn
+          retention-days: 30

@@ -22,6 +22,7 @@ Options:
     --resume        Resume from previous run (not yet implemented)
     --out DIR       Output directory for reports (default: evals/results/)
     --compare PATH  Compare against baseline report
+    --compare-run K With --compare and no subcommand, compare only run K
     --dry-run       Print plan without making LLM calls
 
 Environment:
@@ -84,6 +85,7 @@ from evals.harness.tierb_runners import (
     run_application_evaluation,
     run_blog_evaluation,
     run_compare_only,
+    run_key_for_cli,
     run_memory_evaluation,
     run_safety_evaluation,
     write_tierb_report,
@@ -392,6 +394,8 @@ def run_retriever_evaluation(
 
         except Exception as e:
             errors.append(e)
+            recalls.append(0.0)
+            precisions.append(0.0)
             timings.append(time.time() - row_start)
             results_rows.append({
                 "query": query,
@@ -1291,12 +1295,25 @@ def build_parser() -> argparse.ArgumentParser:
         help="Aggregate evals/results/*_tierb.json into baseline.json",
     )
 
+    # With the top-level --compare and no subcommand, restrict the comparison to
+    # a single run's metrics (e.g. `--compare baseline.json --compare-run router`).
+    parser.add_argument(
+        "--compare-run",
+        default=None,
+        help="With --compare and no subcommand, compare only this subcommand's run",
+    )
+
     parser.set_defaults(dry_run=False)
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     """Main entry point."""
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
     parser = build_parser()
     args = parser.parse_args(argv)
     compare_path = getattr(args, "compare", None)
@@ -1308,6 +1325,11 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if compare_path is not None:
             out_dir = getattr(args, "out", None) or PROJECT_ROOT / "evals" / "results"
+            compare_run = getattr(args, "compare_run", None)
+            if compare_run:
+                return compare_run_after_run(
+                    compare_path, out_dir, run_key_for_cli(compare_run)
+                )
             return run_compare_only(compare_path, out_dir)
         parser.print_help()
         return 0
@@ -1634,7 +1656,7 @@ def main(argv: list[str] | None = None) -> int:
                   f"({graph_tokens.get('calls', 0)} calls)")
 
         if compare_path is not None:
-            compare_run_after_run(compare_path, output_dir, args.command)
+            compare_run_after_run(compare_path, output_dir, run_key_for_cli(args.command))
 
         if results.get("operational", {}).get("error_count", 0) > 0:
             print("\n[NOTE] Errors occurred during evaluation. "
