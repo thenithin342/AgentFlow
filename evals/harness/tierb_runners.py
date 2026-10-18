@@ -1260,7 +1260,6 @@ def _ltm_cross_thread_roundtrip(
     thread_ids sharing a user_id therefore read the same store — this proves
     the cross-thread sharing path end-to-end.
     """
-    from backend.llm import llm_fast
     from backend.memory.ltm import extract_facts, read_ltm, write_ltm
 
     turn = row.get("turn", "")
@@ -1270,6 +1269,8 @@ def _ltm_cross_thread_roundtrip(
 
     facts = list(known_facts or [])
     if not facts:
+        from backend.llm import llm_fast
+
         facts, extract_timed_out = _call_with_timeout(
             extract_facts,
             turn,
