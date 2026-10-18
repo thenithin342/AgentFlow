@@ -1,0 +1,164 @@
+name: Online Evals
+
+# Live, production-facing observability against a deployed AgentFlow instance:
+# the black-box API contract suite plus the operational monitor (health KPIs +
+# live safety scanning).
+#
+# Deliberately separate from ci.yml: this workflow talks to a real deployment
+# (network + LLM tokens for the toxicity judge), so it must never run on pull
+# requests. PR checks stay free of external dependencies.
+#
+#   * schedule          - weekly, Mondays at 03:00 UTC
+#   * workflow_dispatch - manual run against staging/prod
+#
+# Fork safety: forks and unconfigured repos have no AGENTFLOW_BASE_URL secret.
+# The guard warns and skips cleanly rather than failing the workflow.
+
+on:
+  schedule:
+    - cron: '0 3 * * 1'
+  workflow_dispatch:
+    inputs:
+      target_environment:
+        description: 'Deployment to evaluate'
+        type: choice
+        default: staging
+        options:
+          - staging
+          - prod
+      base_url:
+        description: 'Target base URL (blank = repository secret AGENTFLOW_BASE_URL)'
+        type: string
+        required: false
+        default: ''
+      run_blackbox:
+        description: 'Run the live black-box API suite'
+        type: boolean
+        default: true
+      sample_size:
+        description: 'Assistant responses to sample for the safety scan'
+        type: string
+        required: false
+        default: '20'
+
+# Never let a manual run overlap the weekly run: two concurrent runs would hit
+# the same deployment (and the same LLM quota) at once.
+concurrency:
+  group: online-eval
+  cancel-in-progress: false
+
+env:
+  PYTHONPATH: .
+  # No LangSmith tracing: its tracer client spawns worker threads that can delay
+  # process exit.
+  LANGCHAIN_TRACING_V2: "false"
+
+jobs:
+  online-eval:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+
+      # Resolve the target and skip cleanly when nothing is configured. Never
+      # echo the secret value.
+      - name: Resolve target and guard secrets
+        id: guard
+        env:
+          INPUT_BASE_URL: ${{ github.event.inputs.base_url }}
+          SECRET_BASE_URL: ${{ secrets.AGENTFLOW_BASE_URL }}
+        run: |
+          BASE_URL="${INPUT_BASE_URL:-$SECRET_BASE_URL}"
+          if [ -z "$BASE_URL" ]; then
+            echo "::warning::AGENTFLOW_BASE_URL is not set. Skipping online evals."
+            echo "run_evals=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "target_env=${{ github.event.inputs.target_environment || 'staging' }}"
+          echo "base_url=${BASE_URL}" >> "$GITHUB_OUTPUT"
+          echo "run_evals=true" >> "$GITHUB_OUTPUT"
+
+      - name: Run black-box API suite
+        if: steps.guard.outputs.run_evals == 'true' && github.event.inputs.run_blackbox != 'false'
+        env:
+          AGENTFLOW_API_KEY: ${{ secrets.AGENTFLOW_API_KEY }}
+        run: |
+          python evals/online/api_blackbox.py \
+            --base-url "${{ steps.guard.outputs.base_url }}" \
+            --warmup \
+            --out evals/results
+
+      # if: always() so the monitor still runs (and the summary is still
+      # published) even when the black-box suite above goes red.
+      - name: Run operational monitor and safety scan
+        if: always() && steps.guard.outputs.run_evals == 'true'
+        env:
+          AGENTFLOW_API_KEY: ${{ secrets.AGENTFLOW_API_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+        run: |
+          set -uo pipefail
+          TOX_FLAG=""
+          if [ -z "${GROQ_API_KEY:-}" ]; then
+            echo "::warning::GROQ_API_KEY is missing; skipping the toxicity judge."
+            TOX_FLAG="--no-toxicity"
+          fi
+          # shellcheck disable=SC2086
+          python evals/online/monitor.py \
+            --base-url "${{ steps.guard.outputs.base_url }}" \
+            --sample-size "${{ github.event.inputs.sample_size || '20' }}" \
+            --out evals/results \
+            $TOX_FLAG
+
+      - name: Publish comparison to Job Summary
+        if: always() && steps.guard.outputs.run_evals == 'true'
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          sections = []
+          for name in ("online_blackbox.json", "online_monitor.json"):
+              path = Path("evals/results") / name
+              if not path.exists():
+                  continue
+              try:
+                  data = json.loads(path.read_text(encoding="utf-8"))
+              except ValueError:
+                  continue
+              sections.append(f"### {name}")
+              sections.append("```json")
+              sections.append(json.dumps(data.get("summary", {}), indent=2))
+              if name == "online_monitor.json":
+                  sections.append("```")
+                  sections.append("```json")
+                  sections.append(json.dumps(data.get("thresholds", {}), indent=2))
+              sections.append("```")
+          Path("summary.md").write_text("\n".join(sections), encoding="utf-8")
+          PY
+          cat summary.md >> "$GITHUB_STEP_SUMMARY"
+
+      # if: always() so partial reports survive a failed suite/monitor step.
+      - name: Upload online eval reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: online-eval-results-${{ github.run_id }}
+          path: |
+            evals/results/online_blackbox.json
+            evals/results/online_blackbox.md
+            evals/results/online_monitor.json
+            evals/results/online_monitor.md
+          if-no-files-found: warn
+          retention-days: 30

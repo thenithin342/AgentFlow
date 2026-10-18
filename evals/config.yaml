@@ -44,6 +44,21 @@ thresholds:
   # Reliability over /chat, /upload, /review runs.
   success_rate: 0.95
   error_rate: 0.05
+  # Online monitor gates (Phase 4, Session 3) — fractions over the telemetry
+  # window, computed by evals/online/monitor.py.
+  fallback_rate: 0.10
+  timeout_rate: 0.02
+
+# ---------------------------------------------------------------------------
+# Cost accounting (Phase 4 Session 3 — online monitor). USD per 1K tokens.
+# `default` applies to any model without an explicit entry. Values are
+# placeholders (0.0) until confirmed against current provider pricing; cost is
+# reported informationally and never gates.
+# ---------------------------------------------------------------------------
+pricing:
+  default:
+    input_per_1k: 0.0
+    output_per_1k: 0.0
 
 # ---------------------------------------------------------------------------
 # Judge configuration (Phase 2 — Tier B batch harness).
