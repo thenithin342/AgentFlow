@@ -163,6 +163,38 @@ def precision_at_k(relevant: set, retrieved: list, k: int) -> float:
     return hits / len(top_k)
 
 
+def average_precision_at_k(relevant: set, retrieved: list, k: int) -> float:
+    """Rank-weighted contextual precision (average precision@k).
+
+    Raw ``precision_at_k`` is capped at ``|relevant| / k`` — with 1-2 gold
+    chunks and k=5 it can never exceed ~0.4, so a 0.80 threshold is
+    unattainable regardless of ranking quality (EVAL_PLAN §7). This variant
+    is a genuine *contextual* precision: it scores each relevant hit by the
+    precision up to its rank and averages over the relevant set, so it is
+    1.0 when every relevant item sits at the top of the ranking. It is
+    therefore the attainable precision gate.
+
+    Args:
+        relevant: set of relevant item IDs.
+        retrieved: list of retrieved item IDs in rank order.
+        k: number of top items to consider.
+
+    Returns:
+        Average precision@k as a float between 0.0 and 1.0.
+    """
+    if not relevant:
+        return 1.0  # vacuous truth, mirrors recall_at_k
+    if k <= 0:
+        return 0.0
+    hits = 0
+    cumulative = 0.0
+    for rank, item in enumerate(retrieved[:k], start=1):
+        if item in relevant:
+            hits += 1
+            cumulative += hits / rank
+    return cumulative / len(relevant)
+
+
 # ---------------------------------------------------------------------------
 # Operational aggregation
 # ---------------------------------------------------------------------------

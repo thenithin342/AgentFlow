@@ -13,9 +13,19 @@ name: Tier B Evals
 # subcommands at once and exhaust the shared Groq/Gemini quota while racing on
 # evals/results/*.json, so parallel execution is intentionally avoided.
 #
-# After the runs, the job diffs the fresh results against the checked-in
-# baseline (evals/results/baseline.json), fails on any quality regression, and
-# publishes a comparison table to the Actions Job Summary.
+# Gate semantics
+# --------------
+# * Every run step is invoked with the same --limit/--dry-run/--resume flags,
+#   whether one subcommand or `all` was selected.
+# * A run that does not produce a usable row for every requested dataset row
+#   exits non-zero. The workflow keeps going so the remaining reports are still
+#   written, then fails at the end of the step.
+# * The comparison step diffs the fresh results against the checked-in baseline
+#   and fails on BOTH baseline regressions AND absolute quality-gate failures
+#   (default). Set `enforce_absolute_gates=false` to report absolute gates as
+#   informational only while the baseline is being refreshed.
+# * --resume is off by default: a fresh checkout has no previous run artifacts
+#   to resume from, so enabling it would only import stale/foreign rows.
 
 on:
   schedule:
@@ -42,13 +52,18 @@ on:
         required: false
         default: ''
       resume:
-        description: 'Resume from previous results where supported (rag-qa, application)'
+        description: 'Resume from previous results (requires the previous run
+          artifacts to be present in evals/results; a fresh checkout has none)'
         type: boolean
-        default: true
+        default: false
       dry_run:
         description: 'Print the plan without making any LLM calls'
         type: boolean
         default: false
+      enforce_absolute_gates:
+        description: 'Fail the gate on absolute threshold failures as well as regressions'
+        type: boolean
+        default: true
 
 # Never let a manual run overlap the nightly run: two concurrent Tier B runs
 # would fight over the same daily API quota and the same result files.
@@ -105,30 +120,45 @@ jobs:
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
           TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
         run: |
-          set -euo pipefail
+          set -uo pipefail
 
           # On scheduled runs github.event.inputs is empty, so every input needs
           # a fallback that behaves like a plain full nightly run.
           SUBCOMMAND="${{ github.event.inputs.subcommand || 'all' }}"
           LIMIT="${{ github.event.inputs.limit || '' }}"
-          RESUME="${{ github.event.inputs.resume != 'false' }}"
+          RESUME="${{ github.event.inputs.resume == 'true' }}"
           DRY_RUN="${{ github.event.inputs.dry_run == 'true' }}"
 
           echo "subcommand=${SUBCOMMAND} limit=${LIMIT:-<all>} resume=${RESUME} dry_run=${DRY_RUN}"
 
           echo "::group::Validate eval datasets"
-          python evals/harness/validate_datasets.py
+          python evals/harness/validate_datasets.py || exit 1
           echo "::endgroup::"
 
+          # Every run collects its own failure instead of aborting the step, so
+          # a single incomplete subcommand cannot suppress the remaining reports
+          # (and thus the comparison). The step still exits non-zero at the end.
+          RUN_FAILURES=()
           run_tier_b() {
             local name="$1"
             shift
             echo "::group::Tier B - ${name}"
-            python evals/harness/run_offline.py "$name" "$@"
+            if python evals/harness/run_offline.py "$name" "$@"; then
+              echo "Tier B ${name}: complete."
+            else
+              local rc=$?
+              echo "::warning::Tier B ${name} reported failures (exit ${rc}); continuing so every report is still written."
+              RUN_FAILURES+=("$name")
+            fi
             echo "::endgroup::"
           }
 
+          # The same flags are applied to every invocation, including `all`
+          # (previously `all` hardcoded eight bare invocations, so --limit and
+          # --dry-run were silently ignored — audit item 8).
           EXTRA=""
+          ENFORCE_ABS="${{ github.event.inputs.enforce_absolute_gates != 'false' }}"
+          if [ "$ENFORCE_ABS" != "true" ]; then EXTRA="$EXTRA --report-only"; fi
           if [ "$RESUME" = "true" ]; then EXTRA="$EXTRA --resume"; fi
           if [ "$DRY_RUN" = "true" ]; then EXTRA="$EXTRA --dry-run"; fi
           if [ -n "$LIMIT" ]; then EXTRA="$EXTRA --limit $LIMIT"; fi
@@ -154,49 +184,64 @@ jobs:
             # evals/results/baseline.json is the authoritative, checked-in
             # regression target; regenerating it from the current results
             # before the compare step would compare the run against itself and
-            # never flag a regression. Refresh it on purpose with
-            # `workflow_dispatch` subcommand=baseline (or locally).
+            # never flag a regression. Refresh it on purpose (locally or via
+            # workflow_dispatch subcommand=baseline) once a run has complete
+            # provenance.
           else
             # EXTRA is intentionally unquoted so the flags split into arguments.
             # shellcheck disable=SC2086
             run_tier_b "$SUBCOMMAND" $EXTRA
           fi
 
-      # Regression gate: diff the freshly written result files against the
-      # authoritative, checked-in baseline and fail the job when any quality
-      # metric regresses (delta < -0.05, or > +0.05 for lower-is-better
-      # metrics). run_offline.py returns 1 in that case; we capture the code,
-      # close the log group, then propagate it so the step goes red.
+          if [ "${#RUN_FAILURES[@]}" -gt 0 ]; then
+            echo "::error::Incomplete/failed Tier B runs: ${RUN_FAILURES[*]}"
+            exit 1
+          fi
+
+      # Regression + absolute gate. Runs even when the run step above failed
+      # (if: always()) so a failed/incomplete run can never skip the gate and
+      # leave the job looking green. run_offline.py returns 1 for an incomplete
+      # comparison, a regression, or (unless --report-only) an absolute
+      # threshold failure; we capture the code, close the log group, then
+      # propagate it so the step goes red.
       - name: Compare against baseline
         id: compare_step
-        if: steps.guard.outputs.run_evals == 'true' && github.event.inputs.dry_run != 'true'
+        if: always() && steps.guard.outputs.run_evals == 'true' && github.event.inputs.dry_run != 'true'
         run: |
           set -uo pipefail
 
           SUBCOMMAND="${{ github.event.inputs.subcommand || 'all' }}"
           BASELINE="evals/results/baseline.json"
+          ENFORCE_ABS="${{ github.event.inputs.enforce_absolute_gates != 'false' }}"
 
           if [ ! -f "$BASELINE" ]; then
             echo "::error::Authoritative baseline $BASELINE is missing — cannot enforce the regression gate."
             exit 1
           fi
 
+          REPORT_ONLY=""
+          if [ "$ENFORCE_ABS" != "true" ]; then
+            echo "::warning::Absolute quality gates are report-only for this run (enforce_absolute_gates=false)."
+            REPORT_ONLY="--report-only"
+          fi
+
           echo "::group::Compare against baseline (${SUBCOMMAND})"
           compare_rc=0
           if [ "$SUBCOMMAND" = "all" ]; then
-            python evals/harness/run_offline.py --compare "$BASELINE" || compare_rc=$?
+            python evals/harness/run_offline.py --compare "$BASELINE" $REPORT_ONLY || compare_rc=$?
           else
             # Single-subcommand runs compare only their own fresh results
             # (evals/results/compare_<run>.json).
-            python evals/harness/run_offline.py --compare "$BASELINE" --compare-run "$SUBCOMMAND" || compare_rc=$?
+            python evals/harness/run_offline.py --compare "$BASELINE" --compare-run "$SUBCOMMAND" $REPORT_ONLY || compare_rc=$?
           fi
           echo "::endgroup::"
 
           exit "$compare_rc"
 
       # if: always() so the Job Summary and ::error:: annotations are written
-      # even when the gate above just failed. This step also exits non-zero on
-      # a regression, so a red gate can never be mistaken for a pass.
+      # even when one of the steps above just failed. This step also exits
+      # non-zero when the comparison is incomplete, so a red gate can never be
+      # mistaken for a pass.
       - name: Publish comparison to Job Summary
         if: always() && steps.guard.outputs.run_evals == 'true' && github.event.inputs.dry_run != 'true'
         env:

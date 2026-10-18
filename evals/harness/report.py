@@ -65,6 +65,8 @@ def write_report(
     name: str,
     results: dict[str, Any],
     output_dir: Path | None = None,
+    *,
+    provenance: dict[str, Any] | None = None,
 ) -> tuple[Path, Path]:
     """Write JSON + Markdown sibling reports.
 
@@ -72,6 +74,9 @@ def write_report(
         name: run name (e.g. "router", "retriever").
         results: results dict with the schema described below.
         output_dir: directory to write reports to (defaults to evals/results/).
+        provenance: optional provenance block (git SHA, dataset/config hashes,
+            row count, judge model). Defaults to ``build_provenance(name)`` so
+            every report is self-describing (audit item 1).
 
     Returns:
         Tuple of (json_path, md_path).
@@ -81,6 +86,7 @@ def write_report(
         "name": "...",
         "timestamp": "...",
         "git_sha": "...",
+        "provenance": {...},
         "judge_model": "...",
         "rows": [...],
         "aggregate": {...},
@@ -95,11 +101,25 @@ def write_report(
     timestamp = _now_iso()
     git_sha = _get_git_sha()
 
+    if provenance is None:
+        try:
+            # Imported lazily: tierb_runners imports report._get_git_sha.
+            from evals.harness.tierb_runners import build_provenance
+
+            aggregate = results.get("aggregate", {})
+            n_rows = aggregate.get("n_rows") if isinstance(aggregate, dict) else None
+            provenance = build_provenance(
+                name, n_rows=int(n_rows) if isinstance(n_rows, (int, float)) else None
+            )
+        except Exception:
+            provenance = {"git_sha": git_sha}
+
     # Build the full report object
     report: dict[str, Any] = {
         "name": name,
         "timestamp": timestamp,
         "git_sha": git_sha,
+        "provenance": provenance,
         "judge_model": results.get("judge_model", "unknown"),
         "rows": results.get("rows", []),
         "aggregate": results.get("aggregate", {}),

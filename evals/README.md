@@ -134,6 +134,26 @@ python evals/harness/run_offline.py --compare evals/results/baseline.json
 python evals/harness/run_offline.py application --compare evals/results/baseline.json
 ```
 
+Reports now identify the requested dataset slice and carry dataset/code/config
+fingerprints plus nonsecret effective model settings. Comparison rejects missing
+or stale provenance, duplicate rows, missing measurements, and row-count
+mismatches. Baseline creation requires complete coverage of all eight datasets;
+`--limit` smoke reports cannot become an accepted baseline. Historical reports
+without this provenance must be regenerated. Changing agent prompts, corpus PDFs,
+models or thresholds invalidates resume results.
+
+Absolute quality gates apply to each command even without `--compare`.
+`--report-only` makes those gates informational while completeness and regression
+failures still fail. The workflow's `enforce_absolute_gates=false` setting passes
+this option to every runner and the comparison step. Memory, router and retriever
+are validated against their effective generation/embedding settings rather than
+an LLM judge they do not use.
+
+Provider I/O has a 120-second harness deadline; judges and extraction have a
+60-second deadline (safety graph probes use 30 seconds). Timed-out daemon workers
+can continue until the provider's own timeout, but their rows fail and cannot
+enter an accepted baseline. Harness deadlines do not cancel the provider call.
+
 `--compare` prints a per-metric delta (`current - baseline`) and flags a
 regression when a higher-is-better metric drops by more than 0.05 (or a
 lower-is-better metric such as toxicity/leakage rises by more than 0.05). Exit

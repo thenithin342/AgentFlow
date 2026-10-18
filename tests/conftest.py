@@ -98,7 +98,13 @@ class _DeterministicFakeEmbeddings(_LCEmbeddings):
 
 @pytest.fixture(scope="session", autouse=True)
 def _fake_embeddings_for_ci():
-    """Patch _get_embeddings in ingest and ltm so CI never needs GOOGLE_API_KEY."""
+    """Patch _get_embeddings in ingest and ltm so CI never needs GOOGLE_API_KEY.
+
+    The fake is installed as the ``_EMBEDDINGS`` singleton (not just behind
+    the getter) so ``_retrying_embeddings`` wraps it: installing only the
+    getter used to bypass the retry wrapper entirely, masking the FAISS
+    ``not callable`` failure (re-audit P1).
+    """
     import backend.memory.ltm as _ltm
     import backend.rag.ingest as _ingest
 
@@ -106,10 +112,17 @@ def _fake_embeddings_for_ci():
 
     original_ingest = _ingest._get_embeddings
     original_ltm_getter = _ltm._get_embeddings
+    original_singleton = _ingest._EMBEDDINGS
 
     def _fake():
+        # Respect a retry wrapper installed by the harness: the wrapper holds
+        # the fake as ``_inner``, so return the live singleton when it is one.
+        current = _ingest._EMBEDDINGS
+        if current is not None:
+            return current
         return fake
 
+    _ingest._EMBEDDINGS = fake
     _ingest._get_embeddings = _fake
     _ltm._get_embeddings = _fake
 
@@ -117,6 +130,7 @@ def _fake_embeddings_for_ci():
 
     _ingest._get_embeddings = original_ingest
     _ltm._get_embeddings = original_ltm_getter
+    _ingest._EMBEDDINGS = original_singleton
 
 
 
