@@ -21,7 +21,7 @@ import rehypeSanitize from 'rehype-sanitize';
 
 import { MAX_UPLOAD_BYTES, AGENT_COLORS } from "./constants";
 import { getToken, clearToken, isExpired, getUsername } from "./auth";
-import { apiFetch, silentRefresh, waitForBackend } from "./api/client";
+import { apiFetch, silentRefresh, waitForBackend, submitFeedback } from "./api/client";
 import { agentLabelFromRoute, uuid, parseCitations, now } from "./utils";
 import LoginScreen from "./LoginScreen.jsx";
 import useSSE from "./hooks/useSSE";
@@ -206,6 +206,20 @@ function WelcomePanel({ onSelect }) {
       </div>
     </div>
   );
+}
+
+/**
+ * Map a message's agent label to the coarse route stored with feedback.
+ * Returns undefined for agents that do not map to a route (router,
+ * synthesizer, human_review) — the backend field is optional.
+ */
+function routeFromAgent(agent) {
+  if (!agent) return undefined;
+  if (agent.startsWith("research")) return "research";
+  if (agent.startsWith("analysis")) return "analysis";
+  if (agent.startsWith("blog")) return "blog";
+  if (agent.startsWith("chat")) return "chat";
+  return undefined;
 }
 
 function ChatApp({ currentUser, onLogout }) {
@@ -455,6 +469,21 @@ function ChatApp({ currentUser, onLogout }) {
   // checkpoint to resume" error that surfaces in the UI as a
   // fetch failure.
   const [reviewInFlight, setReviewInFlight] = useState(false);
+
+  // Thumbs up/down feedback (Phase 4). Fire-and-forget: the MessageBubble
+  // shows an optimistic state; any failure only surfaces a transient toast.
+  async function handleFeedback(msg, rating) {
+    try {
+      await submitFeedback({
+        thread_id: threadId,
+        message_id: msg?.id || uuid(),
+        rating,
+        route: routeFromAgent(msg?.agent),
+      });
+    } catch {
+      showError("could not record feedback");
+    }
+  }
 
   async function handleApprove() {
     if (reviewInFlight) return;
@@ -1323,6 +1352,7 @@ function ChatApp({ currentUser, onLogout }) {
                   editText={editText}
                   setEditText={setEditText}
                   onRetry={handleRetry}
+                  onFeedback={handleFeedback}
                   onInlineEdit={(text) => {
                     setInput(text);
                     inputRef.current?.focus();

@@ -78,7 +78,7 @@ from backend.auth import PUBLIC_PATHS, ensure_admin, init_user_table_async
 from backend.dependencies import limiter
 from backend.graph.build_graph import builder
 from backend.rag.ingest import warm_embeddings
-from backend.routers import admin, auth, chat, health, threads, upload
+from backend.routers import admin, auth, chat, feedback, health, threads, upload
 
 # ---------------------------------------------------------------------------
 # Helper: cross-Python version (3.11-3.14+) node replacement
@@ -144,6 +144,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             import aiosqlite as _aiosqlite
             _user_conn = await _aiosqlite.connect(settings.checkpoint_db_path, timeout=5.0)
             await init_user_table_async(_user_conn)
+            await feedback.init_feedback_table_async(_user_conn)
             app.state.user_db_conn = _user_conn
             ensure_admin(settings)  # migrates JSON + creates bootstrap admin
             # ---- end user table bootstrap ----
@@ -190,6 +191,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
                 # ---- User table bootstrap (Sprint 4) ----
                 await init_user_table_async(conn)
+                await feedback.init_feedback_table_async(conn)
                 app.state.user_db_conn = conn  # same conn — users table is in agentflow.db
                 ensure_admin(settings)  # migrates JSON + creates bootstrap admin
                 # ---- end user table bootstrap ----
@@ -318,3 +320,4 @@ app.include_router(health.router)
 app.include_router(chat.router)
 app.include_router(upload.router)
 app.include_router(threads.router)
+app.include_router(feedback.router)

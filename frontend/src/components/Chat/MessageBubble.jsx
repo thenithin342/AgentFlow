@@ -86,7 +86,68 @@ function CopyButton({ text, style }) {
 
 const COLLAPSE_THRESHOLD = 1500;
 
-const Message = memo(function Message({ msg, onApprove, onEditResend, onSubmitEdit, onReject, editingReview, editText, setEditText, onRetry, onInlineEdit }) {
+/**
+ * Thumbs up/down controls for a completed assistant turn.
+ *
+ * Optimistic: the pressed button is highlighted immediately and both are
+ * locked so a turn can be rated once (no duplicate submissions). `onFeedback`
+ * may return a promise; failures are swallowed because rating is best-effort
+ * and must never break the chat UI.
+ */
+function FeedbackButtons({ msg, onFeedback }) {
+  const [rating, setRating] = useState(null);
+  const [submitted, setSubmitted] = useState(false);
+
+  const submit = (value) => {
+    if (submitted) return;
+    setRating(value);
+    setSubmitted(true);
+    try {
+      const result = onFeedback(msg, value);
+      if (result && typeof result.catch === "function") result.catch(() => {});
+    } catch {
+      // best-effort — never surface feedback failures to the chat
+    }
+  };
+
+  const button = (value, label, icon) => {
+    const active = rating === value;
+    return (
+      <button
+        type="button"
+        className="af-feedback-btn"
+        aria-label={label}
+        aria-pressed={active}
+        disabled={submitted}
+        onClick={() => submit(value)}
+        style={{
+          background: "transparent",
+          border: "1px solid var(--af-border)",
+          borderRadius: 5,
+          color: active ? "var(--af-research)" : "var(--af-text-muted)",
+          cursor: submitted ? "default" : "pointer",
+          fontSize: 12,
+          lineHeight: 1,
+          padding: "3px 7px",
+        }}
+      >
+        <span aria-hidden="true">{icon}</span>
+      </button>
+    );
+  };
+
+  return (
+    <div className="af-feedback" style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 6 }}>
+      {button("up", "Good response", "👍")}
+      {button("down", "Bad response", "👎")}
+      {submitted && (
+        <span style={{ fontSize: 10.5, color: "var(--af-text-muted)" }}>Thanks for the feedback</span>
+      )}
+    </div>
+  );
+}
+
+const Message = memo(function Message({ msg, onApprove, onEditResend, onSubmitEdit, onReject, editingReview, editText, setEditText, onRetry, onInlineEdit, onFeedback }) {
   const [collapsed, setCollapsed] = useState(
     msg.role === "agent" && !msg.streaming && (msg.text?.length ?? 0) > COLLAPSE_THRESHOLD
   );
@@ -377,6 +438,9 @@ const Message = memo(function Message({ msg, onApprove, onEditResend, onSubmitEd
         )}
       </div>
       {!msg.error && !msg.aborted && <SourceChips citations={citations} />}
+      {!msg.error && !msg.aborted && !msg.streaming && onFeedback && (
+        <FeedbackButtons msg={msg} onFeedback={onFeedback} />
+      )}
     </div>
   );
 });

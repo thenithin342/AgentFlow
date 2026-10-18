@@ -110,3 +110,18 @@ export async function apiFetch(path, options = {}) {
 
   return res;
 }
+
+/**
+ * Submit a thumbs up/down rating for an assistant turn.
+ *
+ * @param {{thread_id: string, message_id: string, rating: "up"|"down",
+ *          comment?: string, route?: string, metadata?: object}} payload
+ * @returns {Promise<Response>} the raw response (caller may ignore it)
+ */
+export async function submitFeedback(payload) {
+  return apiFetch("/feedback", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}

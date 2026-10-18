@@ -12,6 +12,23 @@ from evals.online.api_blackbox import (
 from evals.online.api_blackbox import (
     main as blackbox_main,
 )
+from evals.online.feedback_correlation import (
+    DEFAULT_ROUTE_MAP,
+    build_correlation_report,
+    correlate,
+    load_feedback_from_db,
+    load_feedback_from_json,
+    load_judge_verdicts,
+    load_route_map,
+    normalize_feedback,
+    write_correlation_report,
+)
+from evals.online.feedback_correlation import (
+    build_parser as build_feedback_parser,
+)
+from evals.online.feedback_correlation import (
+    main as feedback_main,
+)
 from evals.online.langsmith_runner import (
     close_langsmith_client,
     evaluate_g_eval,
@@ -47,12 +64,16 @@ from evals.online.monitor import (
 
 __all__ = [
     "ApiBlackboxSuite",
+    "DEFAULT_ROUTE_MAP",
     "blackbox_main",
     "build_blackbox_parser",
+    "build_correlation_report",
+    "build_feedback_parser",
     "build_monitor_parser",
     "build_monitor_report",
     "close_langsmith_client",
     "compute_operational_kpis",
+    "correlate",
     "detect_pii",
     "detect_secrets",
     "evaluate_g_eval",
@@ -60,10 +81,16 @@ __all__ = [
     "evaluate_rag_relevancy",
     "evaluate_router_match",
     "evaluate_thresholds",
+    "feedback_main",
     "flush_langsmith_client",
+    "load_feedback_from_db",
+    "load_feedback_from_json",
+    "load_judge_verdicts",
     "load_monitor_thresholds",
+    "load_route_map",
     "mask",
     "monitor_main",
+    "normalize_feedback",
     "parse_prometheus",
     "parse_sse",
     "parse_structlog_lines",
@@ -75,5 +102,6 @@ __all__ = [
     "target_graph_turn_sync",
     "target_router",
     "write_blackbox_report",
+    "write_correlation_report",
     "write_monitor_report",
 ]

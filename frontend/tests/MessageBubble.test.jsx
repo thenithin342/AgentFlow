@@ -1,7 +1,7 @@
 import React from "react";
-import { render, screen } from "@testing-library/react";
+import { render, screen, fireEvent } from "@testing-library/react";
 import MessageBubble from "../src/components/Chat/MessageBubble";
-import { expect, test, describe } from "vitest";
+import { expect, test, describe, vi } from "vitest";
 
 describe("MessageBubble", () => {
   test("renders user message correctly", () => {
@@ -27,5 +27,35 @@ describe("MessageBubble", () => {
     const msg = { role: "agent", aborted: true };
     render(<MessageBubble msg={msg} />);
     expect(screen.getAllByText(/aborted/).length).toBeGreaterThan(0);
+  });
+
+  test("calls onFeedback once with the rating when a thumb is clicked", () => {
+    const onFeedback = vi.fn();
+    const msg = { role: "agent", agent: "chat_agent", text: "hello" };
+    render(<MessageBubble msg={msg} onFeedback={onFeedback} />);
+    fireEvent.click(screen.getByLabelText("Good response"));
+    expect(onFeedback).toHaveBeenCalledTimes(1);
+    expect(onFeedback).toHaveBeenCalledWith(msg, "up");
+  });
+
+  test("locks feedback buttons after a rating is submitted", () => {
+    const onFeedback = vi.fn();
+    const msg = { role: "agent", agent: "chat_agent", text: "hello" };
+    render(<MessageBubble msg={msg} onFeedback={onFeedback} />);
+    fireEvent.click(screen.getByLabelText("Bad response"));
+    fireEvent.click(screen.getByLabelText("Bad response"));
+    expect(onFeedback).toHaveBeenCalledTimes(1);
+  });
+
+  test("does not render feedback buttons while streaming", () => {
+    const msg = { role: "agent", agent: "chat_agent", text: "hi", streaming: true };
+    render(<MessageBubble msg={msg} onFeedback={() => {}} />);
+    expect(screen.queryByLabelText("Good response")).toBeNull();
+  });
+
+  test("does not render feedback buttons without an onFeedback handler", () => {
+    const msg = { role: "agent", agent: "chat_agent", text: "hello" };
+    render(<MessageBubble msg={msg} />);
+    expect(screen.queryByLabelText("Good response")).toBeNull();
   });
 });

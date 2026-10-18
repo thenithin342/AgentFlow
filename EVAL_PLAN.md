@@ -185,7 +185,7 @@ Sized to run within the free-tier quota (~one full run/day).
 - `run_offline.py` supports a top-level `--dry-run` (no subcommand) in addition to the per-subcommand form.
 - Tier B scheduled nightly (or `workflow_dispatch`) using existing `GROQ_API_KEY` / `TAVILY_API_KEY` / `GOOGLE_API_KEY` secrets — report-only first, then gated on router accuracy + triad after baselines stabilize.
 
-### Phase 4 — Online evals
+### Phase 4 — Online evals (complete — Sessions 1–4: LangSmith runner, live black-box API suite, operational monitor + live safety scan, feedback loop + correlation)
 
 1. **LangSmith rework** — replace the dummy `tests/test_eval.py` dataset/target with real `evals/datasets/*.jsonl`; targets = the deployed graph/route agents; same judge set.
 2. **Live black-box suite** — `/chat` SSE contract (tokens → `[FINAL]` → `[DONE]`, no `[ERROR]`), TTFT + e2e p95 on the live endpoint, `/upload` → RAG round-trip, `/review` interrupt, auth. Scheduled via GH Actions cron.
@@ -226,10 +226,10 @@ Sized to run within the free-tier quota (~one full run/day).
 - [x] DeepEval/G-Eval judge wiring on Groq + Gemini fallback (Session 1 decision: FALLBACK hand-rolled judges in `evals/harness/llm_judge.py`, pinned `openai/gpt-oss-20b` on Groq; covers faithfulness, answer/contextual relevancy, G-Eval 1–5, toxicity — the DeepEval spike was not needed because the fallback covers every judge)
 - [x] Fast PR smoke gate + harness unit suite (Phase 3 Session 1: dataset-validate + dry-run steps in `ci.yml`; `tests/test_eval_harness.py` — 34 `tier_a` unit tests covering `metrics.py`, judge parsing/token accounting, report writers and the `run_offline.py` CLI parser; zero LLM/network)
 - [x] CI job for Tier B (nightly / workflow_dispatch) — Phase 3 Session 3: `.github/workflows/tier_b_eval.yml` runs the 8 subcommands sequentially, diffs fresh results against the checked-in `evals/results/baseline.json`, fails on any metric regression (`delta < -0.05`, or `> +0.05` for lower-is-better metrics) via `run_offline.py --compare`, and publishes a Markdown table + `::error::` annotations to the Job Summary through `evals/harness/compare_summary.py`
-- [ ] LangSmith online runner replacing the dummy eval
-- [ ] Live black-box API suite (SSE contract, TTFT, p95, RAG round-trip, review, auth)
-- [ ] Online monitors (success/error, fallback, timeout, latency, cost)
-- [ ] Feedback signal (thumbs up/down + `POST /feedback`)
+- [x] LangSmith online runner replacing the dummy eval (Phase 4 Session 1: `evals/online/langsmith_runner.py` pushes `evals/datasets/*.jsonl` to LangSmith, targets = deployed graph + router, reuses the offline judge set; `tests/test_online_langsmith.py`, zero-network `tier_a`)
+- [x] Live black-box API suite (SSE contract, TTFT, p95, RAG round-trip, review, auth) — Phase 4 Session 2: `evals/online/api_blackbox.py` (`ApiBlackboxSuite`) + `tests/test_online_blackbox.py`, scheduled via `.github/workflows/online_eval.yml`
+- [x] Online monitors (success/error, fallback, timeout, latency, cost) + live safety scan — Phase 4 Session 3: `evals/online/monitor.py` (structlog + Prometheus KPIs, `scan_live_outputs` PII/protected-leak scanning) + `tests/test_online_monitor.py`, thresholds in `evals/config.yaml`
+- [x] Feedback signal (thumbs up/down + `POST /feedback`) — Phase 4 Session 4: `backend/routers/feedback.py` (`user_feedback` table), UI thumbs in `frontend/src/components/Chat/MessageBubble.jsx`, and `evals/online/feedback_correlation.py` correlating ratings with Tier-B judge verdicts per route
 
 ---
 
@@ -241,6 +241,7 @@ Sized to run within the free-tier quota (~one full run/day).
 4. Online LangSmith experiments run against real datasets on the deployed stack and publish results.
 5. Live black-box suite passes end-to-end against Render/Vercel within the PRD §6 SLA.
 6. Online monitors emit rolling success/error, latency p95, TTFT, and cost/query metrics.
+7. Human thumbs up/down feedback is captured per message and correlated against offline judge verdicts per route (`evals/online/feedback_correlation.py`).
 
 ---
 

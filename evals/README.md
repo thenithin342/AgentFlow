@@ -22,7 +22,7 @@ evals/
 │   └── safety.jsonl       # scope, injection, leakage, toxicity probes
 ├── harness/
 │   └── validate_datasets.py  # Phase 0 stdlib-only dataset validator
-├── online/                # Phase 4: LangSmith runner, API black-box suite, monitors
+├── online/                # Phase 4: LangSmith runner, black-box suite, monitors, feedback correlation
 └── results/               # generated reports (gitignored)
 ```
 
@@ -200,6 +200,46 @@ Implementation notes:
 - Memory extraction precision is reported but not gated — the golden
   `expected_facts` are paraphrases, so a literal substring metric is
   informational. Entity recall and the cross-thread round-trip are gated.
+
+## How to run (Phase 4 — online)
+
+Online evals run against the **deployed** stack, not the local harness. Each
+module is importable and unit-tested offline (`tier_a`, zero network); only the
+CLIs below reach out. See `EVAL_PLAN.md §6` Phase 4.
+
+```powershell
+# LangSmith experiment: push evals/datasets/*.jsonl and run against the
+# deployed graph + router targets (reuses the offline judge set).
+python -m evals.online.langsmith_runner --help
+
+# Live black-box API suite: /chat SSE contract, TTFT + p95, /upload RAG
+# round-trip, /review interrupt, auth. Needs a running API + forwarded cookies.
+python -m evals.online.api_blackbox --help
+
+# Operational monitors: rolling success/error, fallback/timeout, per-route p95
+# latency and cost/query from structlog lines or a Prometheus scrape; plus the
+# live safety scan (PII / protected-leak regex over sampled outputs).
+python -m evals.online.monitor --help
+
+# Feedback ↔ judge correlation: correlate thumbs up/down (the user_feedback
+# table or a JSON export) with offline judge verdicts, per route. Fully offline.
+python evals/online/feedback_correlation.py --feedback feedback.json `
+    --scores evals/results --out evals/results
+python evals/online/feedback_correlation.py --db app.db --table user_feedback
+```
+
+`feedback_correlation.py` maps each message's `route`
+(`chat`/`research`/`analysis`/`blog`) to that route's Tier-B report
+(`generator`/`ragqa`/`application`/`blog`, override with `--route-map`) and
+reports **thumbs-up agreement** (up-votes whose route verdict passed) and
+**thumbs-down failure recall** (down-votes whose route verdict failed), plus a
+per-route breakdown → `evals/results/feedback_correlation.{json,md}`.
+
+Notes:
+- The `user_feedback` table is created by the API at startup
+  (`backend/routers/feedback.py`); `POST /feedback` requires auth and is
+  rate-limited. Feedback is stored DB-only — nothing is forwarded to LangSmith.
+- `.github/workflows/online_eval.yml` schedules the black-box + monitor runs.
 
 ## Quota budget
 
