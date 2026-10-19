@@ -470,18 +470,23 @@ function ChatApp({ currentUser, onLogout }) {
   // fetch failure.
   const [reviewInFlight, setReviewInFlight] = useState(false);
 
-  // Thumbs up/down feedback (Phase 4). Fire-and-forget: the MessageBubble
-  // shows an optimistic state; any failure only surfaces a transient toast.
+  // Thumbs up/down feedback (Phase 4). Resolves true only when the backend
+  // actually stored the row (apiFetch does not throw on non-2xx), so the
+  // MessageBubble can revert its optimistic state instead of showing a false
+  // "Thanks" when the POST failed.
   async function handleFeedback(msg, rating) {
     try {
-      await submitFeedback({
+      const res = await submitFeedback({
         thread_id: threadId,
         message_id: msg?.id || uuid(),
         rating,
         route: routeFromAgent(msg?.agent),
       });
+      if (!res || !res.ok) throw new Error(`feedback request failed: ${res?.status}`);
+      return true;
     } catch {
       showError("could not record feedback");
+      return false;
     }
   }
 

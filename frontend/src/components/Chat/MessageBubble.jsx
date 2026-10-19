@@ -91,22 +91,28 @@ const COLLAPSE_THRESHOLD = 1500;
  *
  * Optimistic: the pressed button is highlighted immediately and both are
  * locked so a turn can be rated once (no duplicate submissions). `onFeedback`
- * may return a promise; failures are swallowed because rating is best-effort
- * and must never break the chat UI.
+ * may return a promise resolving to a success boolean; on failure the state is
+ * reverted (so the turn can be re-rated) and the parent surfaces the error.
+ * A resolved non-boolean value counts as success.
  */
 function FeedbackButtons({ msg, onFeedback }) {
   const [rating, setRating] = useState(null);
   const [submitted, setSubmitted] = useState(false);
 
-  const submit = (value) => {
+  const submit = async (value) => {
     if (submitted) return;
     setRating(value);
     setSubmitted(true);
+    let ok = true;
     try {
       const result = onFeedback(msg, value);
-      if (result && typeof result.catch === "function") result.catch(() => {});
+      ok = typeof result?.then === "function" ? await result : result !== false;
     } catch {
-      // best-effort — never surface feedback failures to the chat
+      ok = false;
+    }
+    if (!ok) {
+      setRating(null);
+      setSubmitted(false);
     }
   };
 

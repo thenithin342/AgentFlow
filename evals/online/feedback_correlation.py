@@ -28,6 +28,14 @@ from typing import Any
 
 HERE = Path(__file__).resolve().parent
 PROJECT_ROOT = HERE.parent.parent
+
+# Defensive: allow importing this module without the repo root on sys.path
+# (e.g. `python evals/online/feedback_correlation.py` run directly).
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from evals.harness.tierb_runners import _FAILED_ROW_STATUSES  # noqa: E402
+
 DEFAULT_RESULTS_DIR = HERE.parent / "results"
 
 # Human/`route` value → Tier-B report stem in evals/results/.
@@ -50,10 +58,6 @@ _ROUTE_PASS_FIELDS: dict[str, tuple[str, ...]] = {
     "application_tierb": ("passed",),
     "blog_tierb": ("passed",),
 }
-
-# Row statuses that mean the measurement failed and must not count toward the
-# route's pass rate (mirrors evals/harness/tierb_runners.py).
-_FAILED_ROW_STATUSES = frozenset({"error", "timeout", "groq_quota", "tavily_quota"})
 
 
 def _git_sha() -> str:
@@ -157,7 +161,8 @@ def load_judge_verdicts(
             verdicts[route] = {
                 "dataset": report_name,
                 "available": False,
-                "n_rows": 0,
+                "n_total": 0,
+                "n_measured": 0,
                 "pass_rate": None,
                 "verdict": None,
             }
@@ -180,7 +185,8 @@ def load_judge_verdicts(
         verdicts[route] = {
             "dataset": report_name,
             "available": True,
-            "n_rows": len(measured),
+            "n_total": len(rows),
+            "n_measured": len(measured),
             "pass_rate": pass_rate,
             "verdict": verdict,
         }
@@ -204,10 +210,9 @@ def correlate(
     matched = 0
     for row in feedback:
         route = row.get("route")
-        bucket = per_route.setdefault(
-            route if route is not None else "<unknown>",
-            {"up": 0, "down": 0},
-        )
+        if route is None:
+            continue  # no route -> cannot be correlated to a judge verdict
+        bucket = per_route.setdefault(route, {"up": 0, "down": 0})
         bucket[row["rating"]] += 1
 
     up_total = sum(1 for r in feedback if r["rating"] == "up")

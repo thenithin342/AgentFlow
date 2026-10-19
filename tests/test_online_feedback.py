@@ -109,6 +109,8 @@ def test_load_judge_verdicts(results_dir):
     assert verdicts["chat"]["dataset"] == "generator_tierb"
     assert verdicts["chat"]["verdict"] is False  # threshold failed
     assert verdicts["chat"]["pass_rate"] == 0.5  # one of two ok rows passed
+    assert verdicts["chat"]["n_total"] == 3  # includes the errored row
+    assert verdicts["chat"]["n_measured"] == 2  # errored row excluded
     assert verdicts["analysis"]["verdict"] is True
     assert verdicts["analysis"]["pass_rate"] == 1.0
     assert verdicts["research"]["verdict"] is True
@@ -156,6 +158,20 @@ def test_correlate_disagreement_and_unmatched():
     assert out["n_matched"] == 1
     assert out["n_unmatched"] == 1
     assert any("blog" in note for note in out["notes"])
+
+
+def test_correlate_ignores_rows_without_a_route():
+    verdicts = {"chat": {"dataset": "generator_tierb", "verdict": False, "pass_rate": 0.5}}
+    feedback = [
+        {"rating": "up", "route": None},  # no route -> excluded from per_route
+        {"rating": "down", "route": "chat"},
+    ]
+    out = fc.correlate(feedback, verdicts)
+    assert "chat" in out["per_route"]
+    assert "<unknown>" not in out["per_route"]
+    assert out["n_feedback"] == 2
+    assert out["n_matched"] == 1
+    assert out["down_failure_recall"] == 1.0
 
 
 def test_build_correlation_report_notes_missing_reports(tmp_path):

@@ -1,5 +1,5 @@
 import React from "react";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import MessageBubble from "../src/components/Chat/MessageBubble";
 import { expect, test, describe, vi } from "vitest";
 
@@ -45,6 +45,26 @@ describe("MessageBubble", () => {
     fireEvent.click(screen.getByLabelText("Bad response"));
     fireEvent.click(screen.getByLabelText("Bad response"));
     expect(onFeedback).toHaveBeenCalledTimes(1);
+  });
+
+  test("keeps the rating locked when the handler resolves success", async () => {
+    const onFeedback = vi.fn().mockResolvedValue(true);
+    const msg = { role: "agent", agent: "chat_agent", text: "hello" };
+    render(<MessageBubble msg={msg} onFeedback={onFeedback} />);
+    fireEvent.click(screen.getByLabelText("Good response"));
+    await waitFor(() => expect(screen.getByText("Thanks for the feedback")).toBeInTheDocument());
+    expect(screen.getByLabelText("Good response")).toBeDisabled();
+  });
+
+  test("reverts the optimistic state when the handler resolves false", async () => {
+    const onFeedback = vi.fn().mockResolvedValue(false);
+    const msg = { role: "agent", agent: "chat_agent", text: "hello" };
+    render(<MessageBubble msg={msg} onFeedback={onFeedback} />);
+    fireEvent.click(screen.getByLabelText("Good response"));
+    await waitFor(() => expect(screen.getByLabelText("Good response")).not.toBeDisabled());
+    expect(screen.queryByText("Thanks for the feedback")).toBeNull();
+    fireEvent.click(screen.getByLabelText("Good response"));
+    expect(onFeedback).toHaveBeenCalledTimes(2);
   });
 
   test("does not render feedback buttons while streaming", () => {
