@@ -239,7 +239,12 @@ Notes:
 - The `user_feedback` table is created by the API at startup
   (`backend/routers/feedback.py`); `POST /feedback` requires auth and is
   rate-limited. Feedback is stored DB-only — nothing is forwarded to LangSmith.
-- `.github/workflows/online_eval.yml` schedules the black-box + monitor runs.
+- `.github/workflows/online_eval.yml` runs weekly (Mondays 03:00 UTC) and on
+  manual dispatch: the black-box suite + monitor in the `online-eval` job, the
+  LangSmith experiments in `langsmith-eval` (`LANGCHAIN_API_KEY`), and — opt-in
+  via the `run_feedback_correlation` input — the feedback correlation in
+  `feedback-correlation` (`FEEDBACK_EXPORT_JSON`, a `user_feedback` JSON export).
+  Each job skips cleanly when its secret is absent, so forks stay green.
 
 ## Quota budget
 

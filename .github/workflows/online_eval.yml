@@ -1,18 +1,26 @@
 name: Online Evals
 
 # Live, production-facing observability against a deployed AgentFlow instance:
-# the black-box API contract suite plus the operational monitor (health KPIs +
-# live safety scanning).
+# the black-box API contract suite, the operational monitor (health KPIs + live
+# safety scanning), the LangSmith experiment runner, and the human-feedback ↔
+# judge correlation.
 #
 # Deliberately separate from ci.yml: this workflow talks to a real deployment
 # (network + LLM tokens for the toxicity judge), so it must never run on pull
 # requests. PR checks stay free of external dependencies.
 #
-#   * schedule          - weekly, Mondays at 03:00 UTC
-#   * workflow_dispatch - manual run against staging/prod
+#   * schedule          - weekly, Mondays at 03:00 UTC (black-box, monitor, LangSmith)
+#   * workflow_dispatch - manual run against staging/prod; the LangSmith and
+#                         feedback-correlation jobs are opt-in via inputs
 #
-# Fork safety: forks and unconfigured repos have no AGENTFLOW_BASE_URL secret.
-# The guard warns and skips cleanly rather than failing the workflow.
+# Required secrets (each job self-guards and skips cleanly when missing):
+#   * AGENTFLOW_BASE_URL / AGENTFLOW_API_KEY - black-box + monitor target
+#   * LANGCHAIN_API_KEY                      - LangSmith experiments
+#   * FEEDBACK_EXPORT_JSON                   - user_feedback JSON export for correlation
+#   * GROQ_API_KEY (+ _2/_3) / GOOGLE_API_KEY / TAVILY_API_KEY - live agents
+#
+# Fork safety: forks and unconfigured repos have none of these secrets. The
+# guards warn and skip cleanly rather than failing the workflow.
 
 on:
   schedule:
@@ -40,6 +48,29 @@ on:
         type: string
         required: false
         default: '20'
+      run_langsmith:
+        description: 'Run the LangSmith experiment suite (needs LANGCHAIN_API_KEY)'
+        type: boolean
+        default: true
+      langsmith_dataset:
+        description: 'LangSmith dataset(s) to evaluate'
+        type: choice
+        default: all
+        options:
+          - all
+          - router
+          - rag_qa
+          - generator
+          - application
+      langsmith_limit:
+        description: 'Limit LangSmith rows per dataset (blank = all rows)'
+        type: string
+        required: false
+        default: ''
+      run_feedback_correlation:
+        description: 'Correlate user_feedback with judge verdicts (needs FEEDBACK_EXPORT_JSON)'
+        type: boolean
+        default: false
 
 # Never let a manual run overlap the weekly run: two concurrent runs would hit
 # the same deployment (and the same LLM quota) at once.
@@ -160,5 +191,121 @@ jobs:
             evals/results/online_blackbox.md
             evals/results/online_monitor.json
             evals/results/online_monitor.md
+          if-no-files-found: warn
+          retention-days: 30
+
+  # LangSmith experiments against the deployed graph + router targets. Reuses
+  # the offline judge set, so it needs the LangSmith key plus the live LLM keys.
+  # Runs on the weekly schedule; a manual dispatch can opt out.
+  langsmith-eval:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    if: ${{ github.event_name == 'schedule' || github.event.inputs.run_langsmith != 'false' }}
+    env:
+      PYTHONPATH: .
+      # Experiments must actually trace, unlike the black-box/monitor job.
+      LANGCHAIN_TRACING_V2: "true"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+
+      # Never echo the secret. The runner also exits 0 when unconfigured.
+      - name: Guard LangSmith secret
+        id: guard_ls
+        env:
+          LANGCHAIN_API_KEY: ${{ secrets.LANGCHAIN_API_KEY }}
+        run: |
+          if [ -z "$LANGCHAIN_API_KEY" ]; then
+            echo "::warning::LANGCHAIN_API_KEY is not set. Skipping LangSmith experiments."
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "run=true" >> "$GITHUB_OUTPUT"
+
+      - name: Run LangSmith experiments
+        if: steps.guard_ls.outputs.run == 'true'
+        env:
+          LANGCHAIN_API_KEY: ${{ secrets.LANGCHAIN_API_KEY }}
+          LANGCHAIN_PROJECT: ${{ secrets.LANGCHAIN_PROJECT || 'AgentFlow-Eval-CI' }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          GROQ_API_KEY_2: ${{ secrets.GROQ_API_KEY_2 }}
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
+        run: |
+          set -uo pipefail
+          DATASET="${{ github.event.inputs.langsmith_dataset || 'all' }}"
+          LIMIT="${{ github.event.inputs.langsmith_limit || '' }}"
+          ARGS=(--dataset "$DATASET" --prefix "AgentFlow-Eval-CI")
+          if [ -n "$LIMIT" ]; then ARGS+=(--limit "$LIMIT"); fi
+          echo "Running LangSmith experiments: dataset=${DATASET} limit=${LIMIT:-<all>}" \
+            >> "$GITHUB_STEP_SUMMARY"
+          python -m evals.online.langsmith_runner "${ARGS[@]}"
+
+  # Offline correlation of human thumbs up/down (a user_feedback JSON export)
+  # against the offline Tier-B judge verdicts. Opt-in only: a fresh checkout has
+  # no Tier-B results, so scores resolve to "unavailable" and the report simply
+  # records the feedback counts until the artifact is supplied.
+  feedback-correlation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.run_feedback_correlation == 'true' }}
+    env:
+      PYTHONPATH: .
+      LANGCHAIN_TRACING_V2: "false"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+
+      - name: Guard feedback export secret
+        id: guard_fb
+        env:
+          FEEDBACK_EXPORT_JSON: ${{ secrets.FEEDBACK_EXPORT_JSON }}
+        run: |
+          if [ -z "$FEEDBACK_EXPORT_JSON" ]; then
+            echo "::warning::FEEDBACK_EXPORT_JSON is not set. Skipping feedback correlation."
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          printf '%s' "$FEEDBACK_EXPORT_JSON" > feedback_export.json
+          echo "run=true" >> "$GITHUB_OUTPUT"
+
+      - name: Correlate feedback with judge verdicts
+        if: steps.guard_fb.outputs.run == 'true'
+        run: |
+          python evals/online/feedback_correlation.py \
+            --feedback feedback_export.json \
+            --scores evals/results \
+            --out evals/results
+
+      - name: Upload correlation report
+        if: always() && steps.guard_fb.outputs.run == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: feedback-correlation-${{ github.run_id }}
+          path: |
+            evals/results/feedback_correlation.json
+            evals/results/feedback_correlation.md
           if-no-files-found: warn
           retention-days: 30

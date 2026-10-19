@@ -60,8 +60,8 @@ class ReviewRequest(BaseModel):
     action: Literal["approve", "edit"]
     edited_response: str | None = None
 
-@limiter.limit(f"{settings.rate_limit_per_minute}/minute")
 @router.post("/chat")
+@limiter.limit(f"{settings.rate_limit_per_minute}/minute")
 async def chat(
     request: Request,
     req: Annotated[ChatRequest, Body()],
@@ -167,8 +167,8 @@ async def chat(
         },
     )
 
-@limiter.limit(f"{settings.rate_limit_per_minute}/minute")
 @router.post("/review/{thread_id}")
+@limiter.limit(f"{settings.rate_limit_per_minute}/minute")
 async def review(
     thread_id: str,
     req: ReviewRequest,

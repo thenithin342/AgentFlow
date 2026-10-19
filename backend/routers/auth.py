@@ -22,8 +22,8 @@ class LoginRequest(BaseModel):
     username: str
     password: str
 
-@limiter.limit(f"{settings.rate_limit_auth_per_minute}/minute")
 @router.post("/login")
+@limiter.limit(f"{settings.rate_limit_auth_per_minute}/minute")
 async def login(req: Annotated[LoginRequest, Body()], request: Request, settings: Settings = Depends(get_settings)) -> dict:
     """Exchange username/password for a JWT."""
     if len(req.password) > 1024 or len(req.username) > 64:
@@ -44,8 +44,8 @@ async def login(req: Annotated[LoginRequest, Body()], request: Request, settings
     }
 
 
-@limiter.limit(f"{settings.rate_limit_auth_per_minute}/minute")
 @router.post("/refresh")
+@limiter.limit(f"{settings.rate_limit_auth_per_minute}/minute")
 async def refresh(request: Request, settings: Settings = Depends(get_settings)) -> dict:
     """Issue a fresh JWT using a recently expired one.
 
