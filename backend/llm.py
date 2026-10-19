@@ -1,7 +1,7 @@
 """
 LLM client setup for AgentFlow.
 
-Reference: TECH_STACK.md section 2 "LLM Providers"
+Reference: README.md (LLM providers).
 
 Fallback strategy
 -----------------

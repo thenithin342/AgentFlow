@@ -12,7 +12,7 @@ Why centralize:
     on first request)
   - Easy to override in tests with `Settings(_env_file=None, ...)`
 
-Reference: DESIGN_DOC.md section 8 "Configuration"
+Reference: README.md (configuration).
 """
 
 from __future__ import annotations

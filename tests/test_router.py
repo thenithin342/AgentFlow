@@ -1,4 +1,4 @@
-"""Offline router label parsing tests (DESIGN_DOC §9).
+"""Offline router label parsing tests .
 
 Tier A: pure string parsing only — zero LLM / zero network calls.
 ``_parse_label`` is the deterministic post-processor for the router node's

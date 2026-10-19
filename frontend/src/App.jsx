@@ -6,7 +6,7 @@ import rehypeSanitize from 'rehype-sanitize';
 /*
  * AgentFlow chat interface.
  *
- * Design reference: UI_DESIGN.md
+ * Design reference: README.md
  *
  * Phase 8b: live SSE streaming from FastAPI backend, review interrupt
  * resolution, and PDF upload. The thread_id is generated once on mount

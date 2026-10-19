@@ -31,8 +31,7 @@ instance used by the test suite and CLI — it is NOT built at import
 time so that `backend/main.py` importing `builder` does not open a
 second sync SQLite connection before the async lifespan one does.
 
-Reference: DESIGN_DOC.md section 1 "Architecture Overview",
-section 4 "Routing Logic", section 5 "Persistence Design"
+Reference: README.md (architecture overview).
 """
 
 import os

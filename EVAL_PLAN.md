@@ -4,7 +4,7 @@
 **Owner:** Nithin
 **Scope:** the whole project — router, Research/Analysis/Chat agents, Blog writer,
 Synthesizer, RAG pipeline, LTM/STM memory, and the end-to-end graph + streaming `/chat` API
-**Companion to:** `PRD.md`, `DESIGN_DOC.md`, `TECH_STACK.md`
+**Companion to:** `PRD.md`
 
 ---
 

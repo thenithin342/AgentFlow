@@ -14,7 +14,7 @@ Why `monkeypatch.setattr(app.state, "graph", fake, raising=False)`:
   on a fresh app — lifespan hasn't run. `raising=False` makes the set
   unconditional, matching the production shape after startup.
 
-Reference: DESIGN_DOC.md section 7 "API Design (FastAPI)".
+Reference: README.md (API design).
 """
 
 import pytest

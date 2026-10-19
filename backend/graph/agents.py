@@ -15,8 +15,7 @@ per-thread `retrieve_documents` tool to a freshly-built ReAct agent. The
 factory is invoked on every node call so the tool's `thread_id` closure
 matches whatever conversation is currently invoking the graph.
 
-Reference: DESIGN_DOC.md section 3 "Node Specifications", section 6 "RAG
-Pipeline".
+Reference: README.md (architecture overview).
 """
 
 import hashlib

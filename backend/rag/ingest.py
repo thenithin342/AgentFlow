@@ -19,8 +19,7 @@ started returning `404 NOT_FOUND` for embedContent, which took down PDF
 ingestion (/upload → 500) AND Long-Term Memory (silent read/write failure)
 at the same time. Config, not code, is the fix for the next retirement.
 
-Reference: DESIGN_DOC.md section 6 "RAG Pipeline", TECH_STACK.md section 4
-"Retrieval / RAG".
+Reference: README.md (architecture overview).
 """
 
 import hashlib

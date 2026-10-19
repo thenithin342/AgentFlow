@@ -8,9 +8,9 @@ Architecture:
     router_node writes `state["route"]` by calling llm_smart with a few-shot
     system prompt. route_query is a conditional edge function — it reads
     `state["route"]` and returns the next node name for LangGraph's path-map
-    lookup (see DESIGN_DOC.md §4).
+    lookup.
 
-Reference: DESIGN_DOC.md section 3 "Router" and section 4 "Routing Logic"
+Reference: README.md (architecture overview).
 """
 
 import logging

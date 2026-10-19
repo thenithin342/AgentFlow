@@ -6,7 +6,7 @@ None for chat/analysis turns), asks llm_smart to rewrite the raw output into a
 clean final answer, and appends a numbered `Sources:` block when sources are
 present.
 
-Reference: DESIGN_DOC.md section 3 "Synthesizer"
+Reference: README.md (architecture overview).
 """
 
 from langchain_core.messages import HumanMessage, SystemMessage

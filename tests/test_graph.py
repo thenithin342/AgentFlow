@@ -1,7 +1,7 @@
 """
 Graph-level tests.
 
-Reference: DESIGN_DOC.md section 9 "Testing Strategy"
+Reference: README.md (testing).
 """
 
 import os

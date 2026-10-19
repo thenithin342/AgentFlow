@@ -29,7 +29,7 @@ Resume contract:
   literally writes "approve" as their edit does NOT accidentally trigger the
   approval path. `None` is also accepted as "no input".
 
-Reference: DESIGN_DOC.md section 3 "Human Review", section 5 "Persistence Design".
+Reference: README.md (architecture overview).
 """
 
 from langchain_core.messages import AIMessage

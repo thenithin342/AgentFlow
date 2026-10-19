@@ -94,4 +94,4 @@ Free-tier API rate limits (especially Groq's 6k TPM cap on 70b models) could int
 
 ## 9. Milestones
 
-Phase 1–2 (routing skeleton) by end of week 1. Phase 3–4 (tools + persistence) by end of week 2. Phase 5–6 (multi-agent + human-in-the-loop) by end of week 3. Phase 7–8 (RAG + full-stack polish) by end of week 5. See `TECH_STACK.md` and `DESIGN_DOC.md` for implementation detail.
+Phase 1–2 (routing skeleton) by end of week 1. Phase 3–4 (tools + persistence) by end of week 2. Phase 5–6 (multi-agent + human-in-the-loop) by end of week 3. Phase 7–8 (RAG + full-stack polish) by end of week 5. See `README.md` for implementation detail.

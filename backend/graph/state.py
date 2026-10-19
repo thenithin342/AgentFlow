@@ -1,7 +1,7 @@
 """
 AgentFlow graph state schema.
 
-Reference: DESIGN_DOC.md section 2 "State Schema"
+Reference: README.md (architecture overview).
 
 Design note on `review_required`:
   Declared with `NotRequired[bool]` — this is a *type-system* signal that the

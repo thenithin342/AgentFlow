@@ -1,8 +1,7 @@
 """
 Pytest configuration and shared fixtures.
 
-Reference: DESIGN_DOC.md section 5 "Persistence Design", section 9
-"Testing Strategy".
+Reference: README.md (architecture overview).
 
 Phase 4: SQLite checkpointer now requires every graph.invoke / ainvoke
 call to pass a thread_id. Rather than touch all 8 existing tests, this

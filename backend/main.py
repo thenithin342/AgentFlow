@@ -1,8 +1,7 @@
 """
 FastAPI application entry point — v0.9.0 (ship-ready).
 
-Exposes the AgentFlow graph over HTTP. Endpoints map to DESIGN_DOC.md
-section 7:
+Exposes the AgentFlow graph over HTTP. Endpoints:
 
   POST /auth/login                 — exchange username/password for a JWT
   POST /chat                       — stream LLM tokens for a given thread_id

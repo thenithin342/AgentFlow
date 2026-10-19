@@ -13,8 +13,7 @@ Design:
     - `STM_KEEP_RECENT` recent messages are always kept verbatim — the LLM needs
       the immediate context uncompressed.
 
-Reference: DESIGN_DOC.md §10 "Open Questions / Future Extensions" — memory
-summarisation node.
+Memory summarisation node.
 """
 
 from __future__ import annotations
