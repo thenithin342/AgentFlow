@@ -91,7 +91,7 @@ def _swap_node_runnable(node: Any, new_runnable: Any) -> Any:
         return node.__replace__(runnable=new_runnable)
     if hasattr(node, "_replace"):
         return node._replace(runnable=new_runnable)
-    if is_dataclass(node):
+    if is_dataclass(node) and not isinstance(node, type):
         return replace(node, runnable=new_runnable)
     raise TypeError(f"Unsupported node specification type: {type(node).__name__}")
 
