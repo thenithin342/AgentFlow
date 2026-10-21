@@ -101,6 +101,7 @@ def _write_pdf(path: Path, paras: list) -> None:
                 NameObject("/Type"): NameObject("/Font"),
                 NameObject("/Subtype"): NameObject("/Type1"),
                 NameObject("/BaseFont"): NameObject("/Helvetica"),
+                NameObject("/Encoding"): NameObject("/WinAnsiEncoding"),
             }
         )
         font_obj = writer._add_object(font)

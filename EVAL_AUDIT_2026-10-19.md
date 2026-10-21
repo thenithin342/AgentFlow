@@ -158,6 +158,19 @@ network access.
 
 ## Provider validation
 
+### Post-push CI follow-up
+
+The first pushed revision passed frontend CI and the Vercel deployment check.
+Backend CI passed lint, type checking, dataset validation, and harness imports,
+then failed the golden `/chat` fact check. CI installed pypdf 6.21.1, while the
+local environment used 6.14.2. The newer parser extracted backticks as replacement
+characters because the generated Helvetica font had no explicit encoding.
+The corpus writer now declares WinAnsiEncoding. All 37 pages round-trip exactly
+under both parser versions. PDFs are also marked binary in Git attributes to
+preserve their byte offsets and keep text normalization out of these artifacts.
+
+### Earlier provider runs
+
 After the initial sandbox/DNS failure and automatic-review rejection, provider
 execution was approved after verifying the exact public/synthetic payloads.
 The 20 October run passed router (0.9773 accuracy), retriever (1.0 recall,

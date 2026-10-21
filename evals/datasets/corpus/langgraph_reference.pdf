@@ -41,6 +41,7 @@ endobj
 /Type /Font
 /Subtype /Type1
 /BaseFont /Helvetica
+/Encoding /WinAnsiEncoding
 >>
 endobj
 6 0 obj
@@ -66,6 +67,7 @@ endobj
 /Type /Font
 /Subtype /Type1
 /BaseFont /Helvetica
+/Encoding /WinAnsiEncoding
 >>
 endobj
 8 0 obj
@@ -91,6 +93,7 @@ endobj
 /Type /Font
 /Subtype /Type1
 /BaseFont /Helvetica
+/Encoding /WinAnsiEncoding
 >>
 endobj
 10 0 obj
@@ -116,6 +119,7 @@ endobj
 /Type /Font
 /Subtype /Type1
 /BaseFont /Helvetica
+/Encoding /WinAnsiEncoding
 >>
 endobj
 12 0 obj
@@ -141,6 +145,7 @@ endobj
 /Type /Font
 /Subtype /Type1
 /BaseFont /Helvetica
+/Encoding /WinAnsiEncoding
 >>
 endobj
 14 0 obj
@@ -166,6 +171,7 @@ endobj
 /Type /Font
 /Subtype /Type1
 /BaseFont /Helvetica
+/Encoding /WinAnsiEncoding
 >>
 endobj
 16 0 obj
@@ -191,6 +197,7 @@ endobj
 /Type /Font
 /Subtype /Type1
 /BaseFont /Helvetica
+/Encoding /WinAnsiEncoding
 >>
 endobj
 18 0 obj
@@ -216,6 +223,7 @@ endobj
 /Type /Font
 /Subtype /Type1
 /BaseFont /Helvetica
+/Encoding /WinAnsiEncoding
 >>
 endobj
 20 0 obj
@@ -241,6 +249,7 @@ endobj
 /Type /Font
 /Subtype /Type1
 /BaseFont /Helvetica
+/Encoding /WinAnsiEncoding
 >>
 endobj
 22 0 obj
@@ -266,6 +275,7 @@ endobj
 /Type /Font
 /Subtype /Type1
 /BaseFont /Helvetica
+/Encoding /WinAnsiEncoding
 >>
 endobj
 24 0 obj
@@ -291,6 +301,7 @@ endobj
 /Type /Font
 /Subtype /Type1
 /BaseFont /Helvetica
+/Encoding /WinAnsiEncoding
 >>
 endobj
 xref
@@ -301,26 +312,26 @@ xref
 0000000182 00000 n 
 0000000231 00000 n 
 0000000504 00000 n 
-0000000574 00000 n 
-0000000871 00000 n 
-0000000941 00000 n 
-0000001207 00000 n 
-0000001277 00000 n 
-0000001566 00000 n 
-0000001637 00000 n 
-0000001920 00000 n 
-0000001991 00000 n 
-0000002256 00000 n 
-0000002327 00000 n 
-0000002607 00000 n 
-0000002678 00000 n 
-0000002966 00000 n 
-0000003037 00000 n 
-0000003310 00000 n 
-0000003381 00000 n 
-0000003662 00000 n 
-0000003733 00000 n 
-0000003991 00000 n 
+0000000601 00000 n 
+0000000898 00000 n 
+0000000995 00000 n 
+0000001261 00000 n 
+0000001358 00000 n 
+0000001647 00000 n 
+0000001745 00000 n 
+0000002028 00000 n 
+0000002126 00000 n 
+0000002391 00000 n 
+0000002489 00000 n 
+0000002769 00000 n 
+0000002867 00000 n 
+0000003155 00000 n 
+0000003253 00000 n 
+0000003526 00000 n 
+0000003624 00000 n 
+0000003905 00000 n 
+0000004003 00000 n 
+0000004261 00000 n 
 trailer
 <<
 /Size 26
@@ -328,5 +339,5 @@ trailer
 /Info 1 0 R
 >>
 startxref
-4062
+4359
 %%EOF
