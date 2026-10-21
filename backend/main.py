@@ -41,6 +41,7 @@ import time as _time
 import uuid as _uuid_mod
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from dataclasses import is_dataclass, replace
 from typing import Any
 
 import aiosqlite
@@ -90,7 +91,9 @@ def _swap_node_runnable(node: Any, new_runnable: Any) -> Any:
         return node.__replace__(runnable=new_runnable)
     if hasattr(node, "_replace"):
         return node._replace(runnable=new_runnable)
-    raise AttributeError(f"StateNodeSpec object {node} has neither __replace__ nor _replace")
+    if is_dataclass(node):
+        return replace(node, runnable=new_runnable)
+    raise TypeError(f"Unsupported node specification type: {type(node).__name__}")
 
 
 # ---------------------------------------------------------------------------

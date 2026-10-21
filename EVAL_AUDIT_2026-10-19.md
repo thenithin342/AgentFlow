@@ -169,6 +169,13 @@ The corpus writer now declares WinAnsiEncoding. All 37 pages round-trip exactly
 under both parser versions. PDFs are also marked binary in Git attributes to
 preserve their byte offsets and keep text normalization out of these artifacts.
 
+After that gate passed, CI exposed a separate Python 3.12 startup failure:
+LangGraph's dataclass node specification had neither replacement protocol the
+startup helper expected. The helper now falls back to standard-library
+`dataclasses.replace`, preserving the remaining node fields. The isolated
+dataclass regression and real fresh-startup test both pass locally; Python 3.12
+validation is performed by the repository CI runner.
+
 ### Earlier provider runs
 
 After the initial sandbox/DNS failure and automatic-review rejection, provider

@@ -1,11 +1,28 @@
 """Exercise real startup with a fresh local checkpoint database."""
 
+from dataclasses import dataclass
+
 import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
 import backend.main as main
 from backend.routers import threads
+
+
+def test_swap_node_supports_dataclasses_without_replace_protocol():
+    @dataclass(frozen=True)
+    class Node:
+        runnable: object
+        metadata: dict
+
+    original = Node(object(), {"name": "blog_writer"})
+    replacement = object()
+    updated = main._swap_node_runnable(original, replacement)
+    assert isinstance(updated, Node)
+    assert updated.runnable is replacement
+    assert updated.metadata is original.metadata
+    assert original.runnable is not replacement
 
 
 @pytest.mark.asyncio
