@@ -78,6 +78,7 @@ from evals.harness.metrics import (
 from evals.harness.report import print_summary, write_report
 from evals.harness.tierb_runners import (
     _build_eval_graph,
+    _mean,
     bounded_call,
     build_baseline,
     build_provenance,
@@ -158,6 +159,7 @@ def run_router_evaluation(
     predictions: list[str] = []
     timings: list[float] = []
     errors: list[Exception] = []
+    row_errors: list[str | None] = []
     # Token tracking placeholder (used when real LLM calls capture usage)
     _token_totals: dict[str, int] = {"input": 0, "output": 0, "total": 0}
 
@@ -170,6 +172,7 @@ def run_router_evaluation(
         try:
             prediction = bounded_call(_route_for_message, query)
             predictions.append(prediction)
+            row_errors.append(None)
 
             # Try to extract token usage from the response if available
             # (this is a bit of a hack since _route_for_message doesn't return it)
@@ -178,12 +181,18 @@ def run_router_evaluation(
 
         except Exception as e:
             errors.append(e)
-            predictions.append("chat")  # fallback prediction
+            # An eval provider failure is not a real "chat" classification.
+            # Keeping it distinct prevents a chat-labeled row from scoring as
+            # correct merely because its LLM request failed.
+            predictions.append("error")
+            row_errors.append(type(e).__name__)
             timings.append(time.time() - row_start)
 
         # Progress indicator
         if (i + 1) % 10 == 0 or (i + 1) == len(sliced_rows):
             print(f"    Processed {i + 1}/{len(sliced_rows)} rows...", file=sys.stderr)
+        # Pace batch classifications within the providers' free-tier rate budgets.
+        time.sleep(2)
 
     wall_time = time.time() - start_time
 
@@ -224,13 +233,15 @@ def run_router_evaluation(
     }
 
     # Add per-row results
-    for row, pred in zip(sliced_rows, predictions, strict=True):
+    for row, pred, error_type in zip(sliced_rows, predictions, row_errors, strict=True):
         results["rows"].append({
             "query": row.get("input", ""),
             "expected": row.get("expected", ""),
             "predicted": pred,
             "correct": row.get("expected") == pred,
             "reason": row.get("reason", ""),
+            "status": "error" if error_type else "ok",
+            "error_type": error_type,
         })
 
     # Add aggregate analysis
@@ -360,8 +371,9 @@ def run_retriever_evaluation(
             # Run retrieval
             thread_id = f"{thread_prefix}{source_doc}"
             retriever = get_retriever(thread_id)
-            retriever.search_kwargs = {"k": k}
-            docs = bounded_call(retriever.invoke, query)
+            from backend.rag.ranking import retrieve_ranked_documents
+
+            docs = bounded_call(retrieve_ranked_documents, query, retriever, k=k)
 
             # Map retrieved docs back to materialized chunk indexes
             chunks = materialized_chunks(source_doc)
@@ -445,10 +457,10 @@ def run_retriever_evaluation(
     print(f"    Removed {n_removed} Tier B index dirs", file=sys.stderr)
 
     # Compute aggregates
-    mean_recall = sum(recalls) / len(recalls) if recalls else 0.0
-    mean_precision = sum(precisions) / len(precisions) if precisions else 0.0
+    mean_recall = _mean(recalls) if recalls else 0.0
+    mean_precision = _mean(precisions) if precisions else 0.0
     mean_contextual_precision = (
-        sum(contextual_precisions) / len(contextual_precisions)
+        _mean(contextual_precisions)
         if contextual_precisions else 0.0
     )
 
@@ -756,8 +768,8 @@ def run_generator_evaluation(
     wall_time = time.time() - start_time
 
     # Compute aggregates
-    mean_faithfulness = sum(faithfulness_scores) / len(faithfulness_scores) if faithfulness_scores else 0.0
-    mean_answer_relevancy = sum(answer_relevancy_scores) / len(answer_relevancy_scores) if answer_relevancy_scores else 0.0
+    mean_faithfulness = _mean(faithfulness_scores) if faithfulness_scores else 0.0
+    mean_answer_relevancy = _mean(answer_relevancy_scores) if answer_relevancy_scores else 0.0
 
     operational = aggregate_operational(
         timings=timings if timings else None,
@@ -801,11 +813,11 @@ def run_generator_evaluation(
                 "a generator-quality gate."
             ),
             "mean_reference_faithfulness": (
-                sum(reference_faithfulness_scores) / len(reference_faithfulness_scores)
+                _mean(reference_faithfulness_scores)
                 if reference_faithfulness_scores else None
             ),
             "mean_reference_answer_relevancy": (
-                sum(reference_answer_relevancy_scores) / len(reference_answer_relevancy_scores)
+                _mean(reference_answer_relevancy_scores)
                 if reference_answer_relevancy_scores else None
             ),
         },
@@ -1170,8 +1182,9 @@ def run_ragqa_evaluation(
             with _retrying_embeddings(retry_attempts, retry_base_delay) as retriever_embeddings:
                 retriever = get_retriever(index_thread_id)
                 if retriever:
-                    retriever.search_kwargs = {"k": k}
-                    retrieved = bounded_call(retriever.invoke, query)
+                    from backend.rag.ranking import retrieve_ranked_documents
+
+                    retrieved = bounded_call(retrieve_ranked_documents, query, retriever, k=k)
                     context_docs = [d.page_content.strip() for d in retrieved]
                 embedding_retries += retriever_embeddings.retries
 
@@ -1188,7 +1201,10 @@ def run_ragqa_evaluation(
             from evals.harness.tierb_runners import _call_with_timeout as _bounded_call
 
             graph = _build_eval_graph()
-            graph_config = {"configurable": {"thread_id": index_thread_id}}
+            graph_config = {"configurable": {
+                "thread_id": index_thread_id,
+                "user_id": f"{index_thread_id}-row-{original_idx}",
+            }}
 
             graph_start = time.time()
             result, graph_timed_out = _bounded_call(
@@ -1210,7 +1226,9 @@ def run_ragqa_evaluation(
 
             # --- Step 3: Extract state fields ---
             final_response = result.get("final_response") or ""
-            documents: list[str] = result.get("documents") or []
+            # Judge the tool evidence actually used to produce the answer.
+            # The preliminary retrieval can differ from the agent's searches.
+            documents: list[str] = result.get("evidence") or []
             route = result.get("route") or "unknown"
 
             all_messages = result.get("messages") or []
@@ -1276,11 +1294,8 @@ def run_ragqa_evaluation(
                 "query": query,
                 "reference": reference,
                 "route": route,
-                "final_response": (
-                    final_response[:300] + "..."
-                    if len(final_response) > 300
-                    else final_response
-                ),
+                "final_response": final_response,
+                "evidence": documents,
                 "documents_count": len(documents),
                 "contextual_relevancy": contextual_relevancy,
                 "faithfulness": faithfulness,
@@ -1405,13 +1420,13 @@ def run_ragqa_evaluation(
 
     # Compute aggregates
     mean_cr = (
-        sum(cr_scores) / len(cr_scores) if cr_scores else 0.0
+        _mean(cr_scores) if cr_scores else 0.0
     )
     mean_fth = (
-        sum(fth_scores) / len(fth_scores) if fth_scores else 0.0
+        _mean(fth_scores) if fth_scores else 0.0
     )
     mean_ar = (
-        sum(ar_scores) / len(ar_scores) if ar_scores else 0.0
+        _mean(ar_scores) if ar_scores else 0.0
     )
 
     operational = aggregate_operational(

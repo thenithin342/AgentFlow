@@ -41,7 +41,15 @@ def tavily_search(query: str) -> str:
     """Search the web for current information relevant to the query."""
     try:
         results = _get_tavily().invoke(query)
-        return str(results)
+        rows = results.get("results") if isinstance(results, dict) else results
+        if not isinstance(rows, list):
+            return str(results)[:12000]
+        excerpts = [
+            f"Title: {str(row.get('title') or '')[:200]}\n"
+            f"URL: {row.get('url') or ''}\n{str(row.get('content') or '')[:2000]}"
+            for row in rows[:3] if isinstance(row, dict)
+        ]
+        return "\n\n".join(excerpts) or "Search returned no useful results."
     except Exception as exc:  # noqa: BLE001
         return f"Error: web search unavailable ({type(exc).__name__}: {exc})"
 
@@ -127,6 +135,7 @@ def calculator(expression: str) -> str:
 
 def make_retrieve_documents_tool(thread_id: str):
     from backend.rag.ingest import _index_dir, _use_qdrant, get_retriever
+    from backend.rag.ranking import retrieve_ranked_documents
 
     @tool
     def retrieve_documents(query: str) -> str:
@@ -147,7 +156,7 @@ def make_retrieve_documents_tool(thread_id: str):
                     "Error: No documents uploaded for this conversation. "
                     "STOP searching and inform the user that they must upload a document first."
                 )
-            docs = retriever.invoke(query)
+            docs = retrieve_ranked_documents(query, retriever)
         except Exception as exc:  # noqa: BLE001
             return f"Error: retrieval failed ({type(exc).__name__}: {exc})"
 
@@ -156,7 +165,9 @@ def make_retrieve_documents_tool(thread_id: str):
 
         lines: list[str] = []
         for i, d in enumerate(docs, start=1):
-            source = d.metadata.get("page", d.metadata.get("source", "unknown"))
+            source = str(d.metadata.get("source", "document")).replace("\n", " ")
+            if isinstance(d.metadata.get("page"), int):
+                source += f", page {d.metadata['page'] + 1}"
             excerpt = d.page_content.strip().replace("\n", " ")
             safe_source = escape_untrusted(str(source))
             safe_excerpt = escape_untrusted(excerpt)

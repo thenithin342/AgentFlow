@@ -8,6 +8,7 @@ from slowapi import Limiter
 from slowapi.util import get_remote_address
 
 from backend.auth import CurrentUser, make_thread_id
+from backend.graph.response_safety import redact_content, redact_sensitive
 from backend.validation import validate_thread_id
 
 
@@ -83,7 +84,7 @@ def _extract_interrupt_draft(snap) -> str:
 def serialize_interrupt(snap) -> dict | None:
     if not snapshot_has_interrupt(snap):
         return None
-    return {"pending": True, "draft": _extract_interrupt_draft(snap)}
+    return {"pending": True, "draft": redact_sensitive(_extract_interrupt_draft(snap))}
 
 def serialize_state_values(values: dict) -> dict:
     """Convert an AgentState.values dict into a JSON-safe dict."""
@@ -93,11 +94,17 @@ def serialize_state_values(values: dict) -> dict:
             out[k] = v.model_dump()
         elif isinstance(v, list):
             out[k] = [
-                item.model_dump() if hasattr(item, "model_dump") else item
+                item.model_dump() if hasattr(item, "model_dump") else (dict(item) if isinstance(item, dict) else item)
                 for item in v
             ]
         else:
             out[k] = v
+    for key in ("final_response", "agent_output", "blog_output", "sources", "evidence", "ltm_context", "stm_summary"):
+        if key in out:
+            out[key] = redact_content(out[key])
+    for message in out.get("messages") or []:
+        if isinstance(message, dict) and message.get("type") != "human" and "content" in message:
+            message["content"] = redact_content(message["content"])
     return out
 
 def checkpoint_id_to_iso(checkpoint_id: str | None) -> str | None:

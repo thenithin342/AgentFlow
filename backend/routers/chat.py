@@ -12,7 +12,7 @@ from langchain_core.messages import HumanMessage
 from pydantic import BaseModel, field_validator
 
 from backend.auth import CurrentUser, require_user
-from backend.constants import MAX_MESSAGE_CHARS, SSE_TOKEN_NODES, TRACE_STREAM_NODES
+from backend.constants import MAX_MESSAGE_CHARS, TRACE_STREAM_NODES
 from backend.dependencies import (
     config_for,
     limiter,
@@ -20,7 +20,7 @@ from backend.dependencies import (
     sse,
 )
 from backend.graph.human_review import APPROVE_SENTINEL
-from backend.graph.messages import content_to_str
+from backend.graph.response_safety import redact_sensitive
 from backend.logging_config import get_logger
 from backend.settings import get_settings
 from backend.validation import validate_thread_id
@@ -109,16 +109,8 @@ async def chat(
                             yield sse(f"[NODE_END:{node}]")
                             continue
 
-                        if event.get("event") != "on_chat_model_stream":
-                            continue
-                        if node not in SSE_TOKEN_NODES:
-                            continue
-                        chunk = event.get("data", {}).get("chunk")
-                        if chunk is None:
-                            continue
-                        text = content_to_str(getattr(chunk, "content", None))
-                        if text:
-                            yield sse(text)
+                        # Model drafts may contain identifiers from documents
+                        # or history. Only the sanitized final answer is public.
                 except Exception:
                     logger.exception("chat_failed", thread_id=req.thread_id, user=user.username)
                     yield sse("[ERROR] an internal error occurred")
@@ -144,6 +136,10 @@ async def chat(
             yield sse("[DONE]")
             return
 
+        final_text = redact_sensitive((snap.values or {}).get("final_response") or "")
+        if final_text:
+            yield sse(f"[FINAL:{json.dumps(final_text)}]")
+
         if snapshot_has_interrupt(snap):
             logger.info("thread_interrupt", thread_id=req.thread_id, user=user.username)
             yield sse("[INTERRUPT]")
@@ -152,9 +148,6 @@ async def chat(
             yield sse(f"[SOURCES:{len(sources)}]")
             if (snap.values or {}).get("router_fallback"):
                 yield sse("[FALLBACK]")
-            final_text = (snap.values or {}).get("final_response") or ""
-            if final_text:
-                yield sse(f"[FINAL:{json.dumps(final_text)}]")
             yield sse("[DONE]")
 
     return StreamingResponse(

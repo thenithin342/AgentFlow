@@ -54,19 +54,8 @@ DEFAULT_SLAS: dict[str, float] = {
     "e2e_research_seconds": 15.0,
 }
 
-# A minimal, structurally valid PDF (magic bytes + one text page) so the
-# suite can exercise the multipart upload path without shipping a fixture.
-MINIMAL_PDF = (
-    b"%PDF-1.4\n"
-    b"1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n"
-    b"2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n"
-    b"3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 612 792]"
-    b"/Contents 4 0 R>>endobj\n"
-    b"4 0 obj<</Length 47>>stream\n"
-    b"BT /F1 12 Tf 72 712 Td (Northwind facts) Tj ET\n"
-    b"endstream endobj\n"
-    b"trailer<</Root 1 0 R>>\n%%EOF\n"
-)
+# Reuse a valid synthetic golden PDF so upload exercises real parsing and text extraction.
+MINIMAL_PDF = (PROJECT_ROOT / "evals/datasets/corpus/northwind_2024.pdf").read_bytes()
 
 
 # ---------------------------------------------------------------------------
@@ -327,7 +316,7 @@ class ApiBlackboxSuite:
                     payload = _data_line(line)
                     if payload is None:
                         continue
-                    if ttft is None:
+                    if ttft is None and (not payload.startswith("[") or payload.startswith(FINAL_PREFIX)):
                         ttft = time.perf_counter() - start
                     events.append(payload)
 
@@ -342,7 +331,7 @@ class ApiBlackboxSuite:
 
     # -- scenarios ----------------------------------------------------------
     async def test_chat_sse_contract(self) -> dict[str, Any]:
-        """Tokens + valid trace markers, [SOURCES], [FINAL], [DONE], no [ERROR]."""
+        """Valid trace markers, nonempty [FINAL], [SOURCES], [DONE], no [ERROR]."""
         start = time.perf_counter()
         failures: list[str] = []
         res = await self._stream_chat("hello", self._thread_id("contract"))
@@ -365,8 +354,8 @@ class ApiBlackboxSuite:
             failures.append("missing [FINAL:<json>] marker")
         if not _has(events, SOURCES_PREFIX):
             failures.append("missing [SOURCES:<count>] marker")
-        if not any(not e.startswith("[") for e in events):
-            failures.append("no token text chunks received")
+        if not _final_text(events):
+            failures.append("empty or malformed final answer")
 
         for event in events:
             if event.startswith(NODE_START_PREFIX) and ("|t=" not in event or not event.endswith("]")):
@@ -377,7 +366,7 @@ class ApiBlackboxSuite:
         )
 
     async def test_chat_latency_sla(self) -> dict[str, Any]:
-        """TTFT < 1.5s and e2e < 5s (chat) / < 15s (research)."""
+        """Gate end-to-end latency; report TTFT informationally (EVAL_PLAN §7)."""
         start = time.perf_counter()
         failures: list[str] = []
         measurements: list[dict[str, Any]] = []
@@ -398,10 +387,6 @@ class ApiBlackboxSuite:
             e2e_limit = self.slas[sla_key]
             ttft = res["ttft_s"]
             e2e = res["e2e_s"]
-            if ttft > self.slas["ttft_seconds"]:
-                failures.append(
-                    f"{label}: TTFT {ttft:.3f}s exceeds {self.slas['ttft_seconds']}s"
-                )
             if e2e > e2e_limit:
                 failures.append(
                     f"{label}: e2e {e2e:.3f}s exceeds {e2e_limit}s ({route})"

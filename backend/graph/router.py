@@ -19,6 +19,7 @@ import re
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from backend.graph.messages import content_to_str
+from backend.graph.response_safety import refusal_for
 from backend.graph.state import AgentState
 
 logger = logging.getLogger("agentflow.router")
@@ -127,6 +128,20 @@ No explanation, no punctuation, no extra text.
 # LLM responses always resolve to the same label.
 _VALID_LABELS = ("research", "analysis", "chat", "blog")
 _PUNCT = ",.!?:;\"'`"
+_LIVE_REQUEST = re.compile(
+    r"\b(?:latest|current|recent|today|now|news|web|online|search|look up)\b",
+    re.IGNORECASE,
+)
+_CASUAL_TURN = re.compile(
+    r"^\s*(?:hi|hello|hey|thanks|thank you|got it|please continue|"
+    r"can you (?:shorten|rephrase|rewrite))\b",
+    re.IGNORECASE,
+)
+_FACTUAL_QUESTION = re.compile(
+    r"^\s*(?:what|which|who|when|where|why|how|was|were|is|are|does|do)\b",
+    re.IGNORECASE,
+)
+_DOCUMENT_REFERENCE = re.compile(r"\b(?:uploaded|document|pdf|file|report)\b", re.IGNORECASE)
 
 
 def _parse_label(text: str) -> str:
@@ -154,7 +169,7 @@ def _route_for_message(user_text: str) -> str:
             SystemMessage(content=ROUTER_SYSTEM_PROMPT),
             HumanMessage(content=user_text),
         ],
-        timeout=5.0,
+        timeout=10.0,  # Gemini fallback requires a minimum 10-second deadline.
         config={"tags": ["router"]},
     )
     return _parse_label(content_to_str(response.content))
@@ -172,21 +187,36 @@ def router_node(state: AgentState) -> dict:
         last_message.content if hasattr(last_message, "content") else last_message
     )
 
-    try:
-        label = _route_for_message(user_text)
-        fallback = False
-    except Exception:
-        # Groq 5xx, network blip, malformed response — any of these would
-        # otherwise propagate and 500 the whole graph run. "chat" is the
-        # safest default: the chat agent has no tools and won't fabricate
-        # external facts. Logging at warning keeps the trail for ops to
-        # see the real exception in the server log.
-        logger.warning(
-            "[AgentFlow] router LLM failed; falling back to 'chat'",
-            exc_info=True,
+    if refusal_for(user_text):
+        # Keep a policy probe out of the web/tool agents altogether.
+        label, fallback = "chat", False
+    else:
+        try:
+            label = _route_for_message(user_text)
+            fallback = False
+        except Exception:
+            # A provider failure should not crash the entire graph turn.
+            label = "research" if _LIVE_REQUEST.search(user_text) else "chat"
+            logger.warning(
+                "[AgentFlow] router LLM failed; falling back to '%s'", label,
+                exc_info=True,
+            )
+            fallback = True
+
+    # Uploaded content is the preferred source for factual questions in that
+    # thread. Keep explicitly live requests on the web route and ordinary
+    # conversational follow-ups on chat.
+    if (
+        state.get("documents")
+        and label in {"research", "chat"}
+        and (
+            _DOCUMENT_REFERENCE.search(user_text)
+            or (_FACTUAL_QUESTION.search(user_text) and not _LIVE_REQUEST.search(user_text))
         )
-        label = "chat"
-        fallback = True
+        and not _CASUAL_TURN.search(user_text)
+        and not refusal_for(user_text)
+    ):
+        label = "analysis"
 
     return {
         "route": label,
@@ -196,6 +226,7 @@ def router_node(state: AgentState) -> dict:
         # new route.
         "agent_output": None,
         "sources": [],
+        "evidence": [],
         "final_response": None,
         "blog_output": None,
     }

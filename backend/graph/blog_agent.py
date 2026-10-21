@@ -29,6 +29,7 @@ from backend.graph.messages import (
     get_msg_content,
     is_ai_message,
 )
+from backend.graph.response_safety import redact_content, redact_sensitive
 from backend.graph.state import AgentState
 from backend.graph.tools import make_retrieve_documents_tool, tavily_search
 
@@ -160,7 +161,11 @@ async def blog_writer_node(state: AgentState, config: RunnableConfig) -> dict:
         final_response: short summary text that skips synthesizer
         sources: URLs collected during research
     """
-    from backend.graph.agents import _get_cached_agent, _thread_id_from_config
+    from backend.graph.agents import (
+        _build_prompt_with_ltm,
+        _get_cached_agent,
+        _thread_id_from_config,
+    )
 
     thread_id = _thread_id_from_config(config)
     rag_tool = make_retrieve_documents_tool(thread_id)
@@ -169,7 +174,7 @@ async def blog_writer_node(state: AgentState, config: RunnableConfig) -> dict:
     agent = _get_cached_agent(
         [tavily_search, rag_tool],
         llm_smart,
-        prompt=BLOG_WRITER_PROMPT,
+        prompt=_build_prompt_with_ltm(BLOG_WRITER_PROMPT, state),
         thread_id=f"{thread_id}:blog",  # separate cache key from research agent
     )
 
@@ -195,8 +200,10 @@ async def blog_writer_node(state: AgentState, config: RunnableConfig) -> dict:
             break
 
     blog_dict = _parse_blog_json(blog_text)
+    blog_text = redact_sensitive(blog_text)
 
     if blog_dict:
+        blog_dict = redact_content(blog_dict)
         markdown = _blog_to_markdown(blog_dict)
         summary = (
             f"✍️ Blog post created: **{blog_dict.get('title', 'Untitled')}** "

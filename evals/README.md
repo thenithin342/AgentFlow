@@ -31,7 +31,7 @@ evals/
 | Tier | What runs | Cost | When |
 |---|---|---|---|
 | **Offline Tier A — deterministic** | Mocked/fake LLMs, recorded tool outputs, deterministic fake embeddings; parsing, orchestration, tool selection, retrieval structure, schema validation, safety regex gates | Zero API cost | CI on every push/PR — blocks merge (Phase 1) |
-| **Offline Tier B — real-model batch** | Same golden datasets through the real Groq/Gemini stack; router accuracy, retrieval/generation triad (DeepEval), G-Eval, safety, operational KPIs | Free-tier quota (see budget below) | Local / scheduled nightly CI, report-only → then gated (Phase 2) |
+| **Offline Tier B — real-model batch** | Same golden datasets through the real Groq/Gemini stack; router accuracy, retrieval/generation triad (LLM judges), G-Eval, safety, operational KPIs | Free-tier quota (see budget below) | Local / scheduled nightly CI, report-only → then gated (Phase 2) |
 | **Online — live** | LangSmith experiments on the deployed stack, black-box API suites, traffic replay, latency/reliability/cost monitors, user feedback | Free-tier quota + deployed infra | Scheduled cron + live (Phase 4) |
 
 ## How to run (Phase 0)
@@ -159,6 +159,11 @@ regression when a higher-is-better metric drops by more than 0.05 (or a
 lower-is-better metric such as toxicity/leakage rises by more than 0.05). Exit
 code is 0 on a clean diff, 1 when a regression is flagged.
 
+The safety runner also gates `injection_refusals` at 100%: instruction-override
+probes must produce a refusal. It records this separately from the structural
+delimiter-escaping check. Retriever candidates are lexically reranked after
+vector search; the report's `contextual_precision` is average precision@k.
+
 ### Observed — full run 2026-10-06 (judge `openai/gpt-oss-20b` on Groq)
 
 | Subcommand | Rows | Wall | LLM calls | Tokens | Tavily | Gate |
@@ -177,8 +182,9 @@ Notes from that run:
 - **Groq free tier is ~200 K tokens/day per org.** The primary key exhausted
   mid-run and the judge client (single key, no fallback) stopped `application`
   at 15/20 rows. `--resume` completed it with a secondary key. The graph LLM
-  pool falls back across `GROQ_API_KEY` / `_2` / `_3`, but the judge only reads
-  `GROQ_API_KEY`, so rotate that env var before a run when the primary is spent.
+  pool already supported `GROQ_API_KEY` / `_2` / `_3`. As of 21 October, the
+  judge also fails over across these keys while keeping its model/provider fixed.
+  Keys belonging to the same organization share its quota.
 - **Tavily counting** uses a LangChain `on_tool_start` callback (sub-agent tool
   messages are not propagated to the parent graph state). On `--resume` the
   seeded rows keep their recorded count, but the run total only covers the
@@ -270,49 +276,30 @@ Note: token cost accounting uses LLM `usage_metadata` (see `backend/llm.py`
 `TokenBudgetWrapper`); judge prompts are versioned and judge models pinned in
 `config.yaml` so score drift ≠ behavioral drift.
 
-## Judges / DeepEval
+## Judges
 
-Decision (2026-09-14): **DeepEval** (`deepeval>=4.2,<5`, isolated in
-`requirements-eval.txt`) is the Tier-B judge framework. Judges run on **Groq via an
-OpenAI-compatible endpoint** (no OpenAI key needed); Gemini is the fallback.
+Tier B uses the implemented hand-rolled judges in `harness/llm_judge.py`
+(stdlib + the existing LangChain/Groq dependencies). DeepEval was an earlier
+proposal; the fallback implementation was selected and no DeepEval install or
+spike is required to run these evaluations.
 
-Why DeepEval over RAGAS:
-- First-class **G-Eval** implementation (matches the Application metric block in
-  EVAL_PLAN.md §3.4) plus the full RAG triad — contextual recall / precision,
-  faithfulness, answer relevancy — and pytest-style ergonomics
-  (`assert_test`, `deepeval test run`).
-- Brings its own LLM layer (openai SDK) with **zero langchain and zero litellm
-  dependencies** — decoupled from this stack's pinned langchain versions (the
-  exact failure point that broke ragas). Verified against PyPI 2026-09-14.
-- Install footprint note: deepeval 4.2.x caps `rich<15` and adds
-  pytest-xdist / pytest-rerunfailures / pytest-repeat — use a **fresh venv**,
-  never the project's main venv.
-- RAGAS was rejected after a real install test: `ragas 0.4.3` resolves but
-  `import ragas` fails against `langchain_community 0.4.2` / `langchain_core 1.4.8`
-  (`ragas/llms/base.py` imports `ChatVertexAI`, which the 0.4.x sunset line removed).
-  The install also downgraded `tenacity 9.1.4 -> 8.5.0` and `rich 15.0.0 -> 13.9.4`
-  in a shared venv (both restored afterwards).
+The judge model, temperature, and timeout are pinned in `config.yaml`.
+Configured Groq keys are tried in order on provider errors, without SDK retry
+sleeps. An explicit per-minute wait of at most 20 seconds can trigger one
+bounded retry; daily exhaustion and longer waits stop the run. Judges keep the
+same model/provider across keys; graph generation has
+its own Groq/Gemini fallback pool. Failed or missing judgments make a run
+incomplete rather than silently improving its score.
 
-Status: **UNVERIFIED — the spike is the Phase 2 entry gate.** Before the Tier-B
-harness is written, a fresh venv must: install this file, score ~3 rows from each
-of `rag_qa.jsonl` / `generator.jsonl` / `application.jsonl` / `safety.jsonl` with
-Groq as the judge, and confirm no conflict with the `tenacity` / `rich` pins. If
-the spike fails, the hand-rolled judges below are the fallback (no new
-dependencies); `config.yaml` thresholds are identical either way.
+- Faithfulness: supported factual claims divided by all factual claims.
+- Answer/contextual relevancy: direct 0–1 rubric scores.
+- Retrieval: anchor-matched chunk IDs, recall, and average precision@k; raw
+  precision@k is informational.
+- RAG-QA: judges see the actual tool evidence used by the graph. Reports retain
+  full answers and evidence for inspecting unsupported claims.
+- G-Eval: rubric dimensions scored 1–5, with their mean as the composite.
+- Toxicity: 0–1 score, lower is safer.
 
-Judges are LLMs too — judge prompts are versioned and judge models pinned in
-`config.yaml` so score drift ≠ behavioural drift.
-
-Fallback (hand-rolled judges): if the DeepEval spike fails, implement judge prompts
-directly in `evals/harness/llm_judge.py` (stdlib + langchain only):
-
-- faithfulness: claim-split the answer, verdict per claim against context
-  (supported / unsupported), score = supported / total.
-- answer/contextual relevancy: 1–5 rubric prompt, normalised to 0–1.
-- contextual recall/precision: anchor-substring hit rate over retrieved chunks
-  (exact-phrase, deterministic — Tier A already).
-- G-Eval: correctness / completeness / style 1–5 rubric per skill, composite mean.
-- toxicity: 0–1 judge score (lower = safer).
-
-This fallback needs no new dependencies and preserves the `config.yaml`
-thresholds unchanged.
+Judge prompts are versioned and included in report provenance. A no-regression
+comparison alone does not establish acceptance: absolute gates, complete row
+coverage, and current provenance must also pass.

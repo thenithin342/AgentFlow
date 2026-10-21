@@ -56,6 +56,7 @@ export default function useSSE({ threadId, showError, reviewRequired, setEditing
     setRouterFallback(false);
     
     synthStartMsRef.current = null;
+    pendingDraftRef.current = "";
     lastMetaUpdateMsRef.current = 0;
     streamSourcesRef.current = 0;
     activeStreamAgentRef.current = "router";
@@ -164,7 +165,7 @@ export default function useSSE({ threadId, showError, reviewRequired, setEditing
       if (parsed.kind === "interrupt") { sentinel = "[INTERRUPT]"; return true; }
       if (parsed.kind === "error") { sentinel = "[ERROR]"; sentinelDetail = (parsed.value || "").replace(/^\[ERROR\]\s*/, ""); return true; }
       if (parsed.kind === "sources") { sourcesCount = parsed.value; streamSourcesRef.current = parsed.value; return false; }
-      if (parsed.kind === "final") { if (!draft) { draft = parsed.value; pendingDraftRef.current = draft; } return false; }
+      if (parsed.kind === "final") { draft = parsed.value; pendingDraftRef.current = draft; return false; }
       if (parsed.kind === "fallback") {
         // Router LLM failed — add a subtle trace entry but don’t block the response.
         if (streamGenRef.current === myGen) setRouterFallback(true);
@@ -243,7 +244,9 @@ export default function useSSE({ threadId, showError, reviewRequired, setEditing
       return false;
     };
 
-    const STALL_MS = 60_000;
+    // Answers are buffered for redaction; allow the backend's 300s deadline
+    // before treating a quiet generation interval as a broken connection.
+    const STALL_MS = 300_000;
     const watchdog = setInterval(() => {
       if (streamGenRef.current !== myGen) { clearInterval(watchdog); return; }
       const elapsed = Date.now() - lastTokenAtMsRef.current;
@@ -261,7 +264,7 @@ export default function useSSE({ threadId, showError, reviewRequired, setEditing
           const next = [...m];
           const idx = next.findIndex((x) => x.id === streamingId);
           if (idx !== -1 && next[idx].streaming) {
-            next[idx] = { ...next[idx], streaming: false, error: true, text: next[idx].text || "Stream stalled (60s with no tokens)." };
+            next[idx] = { ...next[idx], streaming: false, error: true, text: next[idx].text || "Stream stalled (5 minutes with no activity)." };
           }
           return next;
         });

@@ -172,10 +172,12 @@ def _write_markdown(path: Path, report: dict[str, Any]) -> None:
         lines.append("")
         all_passed = True
         for name, check in thresholds.items():
-            status = "PASS" if check.get("passed") else "FAIL"
-            if not check.get("passed"):
+            status = "INFO" if check.get("passed") is None else "PASS" if check["passed"] else "FAIL"
+            if check.get("passed") is False:
                 all_passed = False
-            lines.append(f"- [{status}] **{name}** = {check.get('value', 'N/A'):.4f} (threshold: {check.get('threshold', 'N/A')})")
+            value = check.get("value")
+            displayed = f"{value:.4f}" if isinstance(value, (int, float)) else "N/A"
+            lines.append(f"- [{status}] **{name}** = {displayed} (threshold: {check.get('threshold', 'N/A')})")
         lines.append("")
         if all_passed:
             lines.append("**All thresholds passed.**")
@@ -413,10 +415,12 @@ def print_summary(results: dict[str, Any]) -> None:
         print("\n  Threshold Checks:")
         all_passed = True
         for metric, check in sorted(thresholds.items()):
-            status = "PASS" if check.get("passed") else "FAIL"
-            if not check.get("passed"):
+            status = "INFO" if check.get("passed") is None else "PASS" if check["passed"] else "FAIL"
+            if check.get("passed") is False:
                 all_passed = False
-            print(f"    [{status}] {metric}: {check.get('value', 'N/A'):.4f} (threshold: {check.get('threshold', 'N/A')})")
+            value = check.get("value")
+            displayed = f"{value:.4f}" if isinstance(value, (int, float)) else "N/A"
+            print(f"    [{status}] {metric}: {displayed} (threshold: {check.get('threshold', 'N/A')})")
         print()
         if all_passed:
             print("  [PASS] All thresholds passed")

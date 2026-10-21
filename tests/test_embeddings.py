@@ -20,6 +20,8 @@ from langchain_core.documents import Document
 
 import backend.rag.ingest as ingest
 
+_REAL_GET_EMBEDDINGS = ingest._get_embeddings
+
 
 def _clean(thread_id: str) -> None:
     idx = ingest._index_dir(thread_id)
@@ -203,3 +205,23 @@ def test_qdrant_collection_untouched_when_dimension_matches(monkeypatch):
 
     assert stub.deleted == []
     assert stub.created == []
+
+
+def test_embedding_client_uses_settings_key_without_environment_side_effects(monkeypatch):
+    import langchain_google_genai
+
+    from backend.settings import get_settings
+
+    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.setattr(get_settings(), "google_api_key", "settings-only-test-key")
+    monkeypatch.setattr(ingest, "_EMBEDDINGS", None)
+    received = {}
+
+    def client(**kwargs):
+        received.update(kwargs)
+        return object()
+
+    monkeypatch.setattr(langchain_google_genai, "GoogleGenerativeAIEmbeddings", client)
+    assert _REAL_GET_EMBEDDINGS() is not None
+    assert received["google_api_key"] == "settings-only-test-key"

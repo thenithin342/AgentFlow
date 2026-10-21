@@ -43,7 +43,7 @@ import re
 _URL_RE = re.compile(r"https?://[^\s\)\]\"',<>]+")
 
 def extract_sources(messages) -> list[str]:
-    """Pull every http(s) URL out of ToolMessages.
+    """Pull web URLs and retrieved document labels out of ToolMessages.
 
     Robust to both string and list-content ToolMessage variants. Returns
     first-seen order; duplicates are not removed.
@@ -54,6 +54,9 @@ def extract_sources(messages) -> list[str]:
             content = get_msg_content(msg)
             if isinstance(content, str):
                 sources.extend(_URL_RE.findall(content))
+                name = msg.get("name") if isinstance(msg, dict) else getattr(msg, "name", None)
+                if name == "retrieve_documents":
+                    sources.extend(re.findall(r"<<UNTRUSTED EXCERPT — source: ([^>]+)>>", content))
             else:
                 sources.extend(_URL_RE.findall(str(content)))
     return list(dict.fromkeys(sources))

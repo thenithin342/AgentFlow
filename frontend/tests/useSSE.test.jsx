@@ -1,6 +1,7 @@
 import { renderHook, act } from "@testing-library/react";
 import useSSE from "../src/hooks/useSSE";
 import { expect, test, describe, vi } from "vitest";
+import { apiFetch } from "../src/api/client";
 
 // Mock the API client
 vi.mock("../src/api/client", () => ({
@@ -8,6 +9,23 @@ vi.mock("../src/api/client", () => ({
 }));
 
 describe("useSSE", () => {
+  test("uses the authoritative final answer after a draft", async () => {
+    const wire = 'data: preliminary draft\n\ndata: [FINAL:"verified answer"]\n\ndata: [DONE]\n\n';
+    apiFetch.mockResolvedValueOnce({
+      ok: true,
+      body: new ReadableStream({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode(wire));
+          controller.close();
+        },
+      }),
+    });
+    const { result } = renderHook(() => useSSE({ threadId: "final-test", showError: vi.fn() }));
+    await act(async () => { await result.current.sendMessage("hello"); });
+    expect(result.current.messages.at(-1).text).toBe("verified answer");
+    expect(result.current.messages.at(-1).streaming).toBe(false);
+  });
+
   test("initializes with default state", () => {
     const { result } = renderHook(() =>
       useSSE({

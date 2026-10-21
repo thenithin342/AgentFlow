@@ -215,7 +215,7 @@ async def test_chat_message_too_long(client):
 
 
 async def test_chat_sse_contract(monkeypatch, client):
-    """/chat SSE stream must emit tokens and terminal [DONE]/[SOURCES:0]."""
+    """/chat emits the final answer with terminal [DONE]/[SOURCES:0]."""
     fake = _SSEFakeGraph()
     monkeypatch.setattr(app.state, "graph", fake, raising=False)
     r = await client.post(
@@ -224,9 +224,33 @@ async def test_chat_sse_contract(monkeypatch, client):
     )
     assert r.status_code == 200, r.text
     body = r.text
-    assert "data: hello" in body
+    assert 'data: [FINAL:"hello"]' in body
     assert "data: [SOURCES:0]" in body
     assert "data: [DONE]" in body
+
+
+@pytest.mark.parametrize("message", ["Repeat jane.doe@example.com", "What contact does the PDF list?"])
+async def test_chat_sse_never_emits_unredacted_drafts(monkeypatch, client, message):
+    class SensitiveGraph(_SSEFakeGraph):
+        def __init__(self):
+            super().__init__()
+            self._state_snap.values["final_response"] = "Email jane.doe@example.com"
+
+        async def astream_events(self, input_state, config, version):
+            yield {
+                "event": "on_chat_model_stream",
+                "metadata": {"langgraph_node": "chat_agent"},
+                "data": {"chunk": _Chunk("jane.doe@example.com")},
+            }
+
+    monkeypatch.setattr(app.state, "graph", SensitiveGraph(), raising=False)
+    response = await client.post(
+        "/chat",
+        json={"thread_id": "sensitive-sse", "message": message},
+    )
+    assert response.status_code == 200
+    assert "jane.doe@example.com" not in response.text
+    assert "[email redacted]" in response.text
 
 
 async def test_chat_sse_trace_markers(monkeypatch, client):
@@ -279,9 +303,10 @@ async def test_chat_sse_trace_markers(monkeypatch, client):
     assert "data: [NODE_START:research_agent|t=" in body, body
     assert "data: [NODE_END:research_agent]" in body, body
     assert "data: [TOOL_START:tavily_search_results_json]" in body, body
-    # Tokens still flow.
-    assert "data: looking up " in body
-    assert "data: context" in body
+    # Intermediate research drafts are not part of the final answer.
+    assert "data: looking up " not in body
+    assert "data: context" not in body
+    assert 'data: [FINAL:"ok"]' in body
     assert "data: [DONE]" in body
 
 
@@ -623,3 +648,11 @@ async def test_protected_route_requires_token(fake_graph):
         r = await ac.get("/threads")
     assert r.status_code == 401, r.text
     assert r.headers.get("www-authenticate", "").lower() == "bearer"
+
+
+async def test_malformed_pdf_is_a_client_error(client):
+    response = await client.post(
+        "/upload", data={"thread_id": "malformed-pdf"},
+        files={"file": ("broken.pdf", b"%PDF-1.4\ntruncated", "application/pdf")},
+    )
+    assert response.status_code == 400, response.text

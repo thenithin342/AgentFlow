@@ -29,6 +29,7 @@ import logging as _logging
 import os
 import sys
 import threading
+from functools import lru_cache
 from typing import Any
 
 import groq
@@ -38,12 +39,36 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_groq import ChatGroq
 from pydantic import SecretStr
 
+from backend.graph.messages import content_to_str, get_msg_content
+
 load_dotenv()
 
 # We use tiktoken for a fast, reliable token count estimate.
 import tiktoken
 
-_enc = tiktoken.get_encoding("cl100k_base")
+
+@lru_cache(maxsize=1)
+def _token_encoding() -> Any | None:
+    """Load the tokenizer on first use, without making module imports depend on it.
+
+    tiktoken downloads encoding data on a cold cache. If that download is
+    unavailable, byte length is a conservative upper bound for token count.
+    Cache the failure so subsequent requests do not retry the network call.
+    """
+    try:
+        return tiktoken.get_encoding("cl100k_base")
+    except Exception:
+        _logging.getLogger("agentflow.llm").warning(
+            "tokenizer_unavailable_using_byte_count", exc_info=True
+        )
+        return None
+
+
+def _count_input_tokens(text: str) -> int:
+    encoding = _token_encoding()
+    if encoding is None:
+        return len(text.encode("utf-8"))
+    return len(encoding.encode(text, disallowed_special=()))
 
 class TokenBudgetWrapper(RunnableBinding):
     """Prevents silent context window overflow by bounding input tokens."""
@@ -51,11 +76,13 @@ class TokenBudgetWrapper(RunnableBinding):
 
     def _check(self, input: Any) -> None:
         messages = input.get("messages", []) if isinstance(input, dict) else input
+        if hasattr(messages, "to_messages"):
+            messages = messages.to_messages()
         total_text = " ".join(
-            m.content if hasattr(m, "content") else str(m.get("content", ""))
-            for m in (messages if isinstance(messages, list) else [messages])
+            content_to_str(get_msg_content(m)) if isinstance(m, dict) or hasattr(m, "content") else str(m)
+            for m in (messages if isinstance(messages, (list, tuple)) else [messages])
         )
-        tokens = len(_enc.encode(total_text, disallowed_special=()))
+        tokens = _count_input_tokens(total_text)
         if tokens > self.budget:
             _log = _logging.getLogger("agentflow.llm")
             _log.error(
@@ -136,7 +163,7 @@ def _collect_groq_keys() -> list[str]:
     return keys
 
 
-def _build_groq_client(model: str, api_key: str, max_retries: int = 2) -> ChatGroq:
+def _build_groq_client(model: str, api_key: str, max_retries: int = 0) -> ChatGroq:
     """Build a single ChatGroq client for one API key."""
     return ChatGroq(
         model=model,
@@ -164,6 +191,7 @@ def _build_groq_pool(model: str) -> Runnable:
             "No Groq API key found. Set GROQ_API_KEY in your .env file. "
             "Get a free key at https://console.groq.com."
         )
+    # Let the next key/provider handle transient failures without SDK retry sleeps.
     clients = [_build_groq_client(model, k) for k in keys]
     fallbacks: list[Any] = list(clients[1:])
     gemini = _build_fallback()

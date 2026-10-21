@@ -32,6 +32,7 @@ class AgentState(TypedDict):
     agent_output: str | None
     sources: list[str] | None
     documents: list[str] | None
+    evidence: NotRequired[list[str]]
     # NotRequired = "the key may be omitted"; the runtime default of False is
     # provided by `state.get("review_required", False)` at read sites.
     review_required: NotRequired[bool]

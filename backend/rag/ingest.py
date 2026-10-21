@@ -189,6 +189,7 @@ def _get_embeddings():
             _EMBEDDINGS = GoogleGenerativeAIEmbeddings(
                 model=_EMBED_MODEL,
                 output_dimensionality=_EMBED_DIM,
+                google_api_key=_config_value("google_api_key", "GOOGLE_API_KEY", "") or None,
             )
         return _EMBEDDINGS
 
@@ -304,7 +305,7 @@ def ingest_pdf(
     basename = source_name or os.path.basename(file_path) or "document.pdf"
     docs = PyPDFLoader(file_path).load()
     for doc in docs:
-        doc.metadata.setdefault("source", basename)
+        doc.metadata["source"] = basename
         doc.metadata["thread_id"] = thread_id
 
     splitter = RecursiveCharacterTextSplitter(chunk_size=800, chunk_overlap=150)

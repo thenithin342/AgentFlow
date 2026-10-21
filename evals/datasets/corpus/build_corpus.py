@@ -40,6 +40,8 @@ AGENTFLOW_FACTS = [
     "When review mode is enabled, a human-review checkpoint pauses for approval or edits before responding.",
     "AgentFlow supports retrieval-augmented generation over user-uploaded PDFs indexed into FAISS.",
     "Long-term memory stores user facts across threads, and short-term memory compresses older turns into a summary.",
+    "LTM extracts facts from conversations.",
+    "AgentFlow provides a streaming SSE `/chat` endpoint.",
 ]
 
 LANGGRAPH_REFERENCE = [
@@ -53,6 +55,7 @@ LANGGRAPH_REFERENCE = [
     "The create_react_agent helper wraps a language model in a reason-and-act loop bound to tools.",
     "Subgraphs let teams compose smaller graphs into a larger multi-agent workflow.",
     "LangGraph supports streaming so tokens reach the user interface as they are generated.",
+    "The StateGraph builder is used to construct graphs in LangGraph.",
 ]
 
 NORTHWIND_2024 = [

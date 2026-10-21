@@ -250,6 +250,13 @@ async def test_chat_latency_sla_passes(monkeypatch, client, auth_headers):
     assert len(result["details"]["measurements"]) == 2
 
 
+async def test_ttft_is_informational(monkeypatch, client, auth_headers):
+    monkeypatch.setattr(app.state, "graph", _SSEFakeGraph(), raising=False)
+    suite = _suite(client, auth_headers, slas={"ttft_seconds": 1e-9})
+    result = await suite.test_chat_latency_sla()
+    assert result["passed"], result["failures"]
+
+
 async def test_chat_latency_sla_fails_when_threshold_exceeded(
     monkeypatch, client, auth_headers
 ):
@@ -257,7 +264,7 @@ async def test_chat_latency_sla_fails_when_threshold_exceeded(
     suite = _suite(client, auth_headers, slas={"ttft_seconds": 1e-9, "e2e_chat_seconds": 1e-9})
     result = await suite.test_chat_latency_sla()
     assert not result["passed"]
-    assert any("TTFT" in failure for failure in result["failures"])
+    assert any("e2e" in failure for failure in result["failures"])
 
 
 # ---------------------------------------------------------------------------
@@ -566,3 +573,12 @@ def test_main_returns_one_without_credentials(monkeypatch):
 
     monkeypatch.setattr(bb, "resolve_auth", _no_auth)
     assert bb.main([]) == 1
+
+
+def test_blackbox_pdf_fixture_is_parseable_and_contains_text():
+    from io import BytesIO
+
+    from pypdf import PdfReader
+
+    reader = PdfReader(BytesIO(bb.MINIMAL_PDF))
+    assert "Northwind" in reader.pages[0].extract_text()

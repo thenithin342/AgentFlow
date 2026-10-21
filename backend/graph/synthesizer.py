@@ -40,26 +40,33 @@ to the user as a knowledgeable peer.
 
 ## Content rules
 1. Rewrite for clarity, flow, and conciseness. Cut padding, repetition, and \
-   hedging. Preserve every factual claim and important caveat.
+   hedging. Preserve supported factual claims and important caveats.
 2. If the agent output is from a **document / PDF analysis**, lead with the \
    key insight first, then supporting details. Do NOT say "The document says …" \
    more than once — just relay the information naturally.
 3. If the agent output is from a **research / web search**, synthesize the \
-   findings into a coherent narrative. Do NOT list raw search snippets verbatim.
+   findings into a coherent narrative. For a focused factual question, stay \
+   within 150 words unless the user asks for detail. Do NOT list raw snippets verbatim.
 4. If the agent output is from a **calculation or analysis**, show the result \
    prominently, then the reasoning briefly.
 5. If the agent output already looks complete and well-written, a light polish \
    is fine — do not rewrite for the sake of it.
 6. Never fabricate facts. If the agent said it doesn't know, say so clearly \
    and suggest how the user could find out.
+7. When tool evidence is provided, check the agent's claims against it. Remove \
+   unsupported claims, unrelated entities, and extra facts from model memory. \
+   If the evidence is insufficient, explain what is missing.
+8. Remove API names and code examples not supported by the evidence. A short \
+   factual question usually needs 1–3 sentences; do not expand a brief source \
+   fact into a tutorial or add implementation details from memory.
 
 ## Sources
 - If the payload below contains a `Sources:` list, append EXACTLY this block \
   at the very end (two blank lines before it), referencing inline as [1], [2]:
 
 Sources:
-[1] <url 1>
-[2] <url 2>
+[1] <source URL or document label 1>
+[2] <source URL or document label 2>
 
 - If no sources are listed (or `Sources: none`), omit the block entirely.
 
@@ -95,6 +102,9 @@ def _build_user_payload(state: AgentState) -> str:
 
     route = state.get("route") or "unknown"
     agent_output = state.get("agent_output") or "(no agent output)"
+    if route == "analysis" and state.get("documents") and state.get("evidence"):
+        # An unchecked draft can anchor the final model on invented APIs or facts.
+        agent_output = "Answer the user's question directly from the tool evidence."
     sources = list(dict.fromkeys(state.get("sources") or []))
 
     # Build the numbered citation block exactly as the system prompt requires:
@@ -126,14 +136,15 @@ def _build_user_payload(state: AgentState) -> str:
         f"{safe_output}\n"
         "<<END AGENT OUTPUT>>"
     )
-    documents = state.get("documents") or []
-    doc_info = ""
-    if documents:
-        doc_info = f"\nUploaded documents: {', '.join(str(d) for d in documents)}"
+    evidence = state.get("evidence") or []
+    evidence_block = ""
+    if evidence:
+        safe_evidence = escape_untrusted("\n\n".join(evidence))
+        evidence_block = f"\n<<UNTRUSTED TOOL EVIDENCE>>\n{safe_evidence}\n<<END EVIDENCE>>"
 
     payload = (
         f"Original user query: {wrapped_query}\n"
-        f"Route: {route}{doc_info}\n"
+        f"Route: {route}{evidence_block}\n"
         f"Agent output:\n{wrapped_output}"
     )
     if sources_block:
@@ -151,6 +162,14 @@ def synthesizer_node(state: AgentState, config: RunnableConfig) -> dict:
     non-empty.
     """
     system_prompt = SYNTHESIZER_SYSTEM_PROMPT
+    if state.get("route") == "analysis" and state.get("documents") and state.get("evidence"):
+        system_prompt += (
+            "\n\nDocument answer mode: the unchecked agent draft is withheld. "
+            "Answer the user's question directly from the tool evidence, in brief prose. "
+            "Do not add examples, API details, or code unless the user explicitly asks "
+            "for them and they are present in the evidence. If a detail is absent, "
+            "say the provided material does not specify it; do not claim it does not exist."
+        )
 
     from backend.llm import llm_smart
     safe_messages = truncate_messages_if_needed(

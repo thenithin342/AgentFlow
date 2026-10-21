@@ -9,6 +9,7 @@ import tempfile
 from collections import OrderedDict
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
+from pypdf.errors import PdfReadError
 
 from backend.auth import CurrentUser, make_thread_id, require_user
 from backend.constants import MAX_UPLOAD_BYTES
@@ -128,7 +129,7 @@ async def upload(
         }
     except HTTPException:
         raise
-    except ValueError as exc:
+    except (ValueError, PdfReadError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
         logger.exception("upload_failed", thread_id=thread_id, user=user.username)

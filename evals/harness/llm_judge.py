@@ -16,10 +16,13 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
 from typing import Any
 
+import groq
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_groq import ChatGroq
+from pydantic import SecretStr
 
 from evals.config import load_config
 
@@ -55,7 +58,7 @@ OUTPUT_KEYS = USAGE_FIELDS.get("output", ["output_tokens", "completion_tokens"])
 _judge_client = None
 
 
-def _get_judge_client() -> ChatGroq:
+def _get_judge_client() -> Any:
     """Return the lazy-initialised Groq judge client."""
     global _judge_client
     if _judge_client is None:
@@ -63,10 +66,19 @@ def _get_judge_client() -> ChatGroq:
             "model": JUDGE_MODEL,
             "temperature": JUDGE_TEMPERATURE,
             "timeout": JUDGE_TIMEOUT_S,
+            "max_retries": 0,
         }
         if JUDGE_BASE_URL is not None:
             kwargs["base_url"] = JUDGE_BASE_URL
-        _judge_client = ChatGroq(**kwargs)
+        from backend.llm import _collect_groq_keys
+
+        clients = [ChatGroq(**kwargs, api_key=SecretStr(key)) for key in _collect_groq_keys()]
+        if not clients:
+            raise RuntimeError("No Groq API key configured for the eval judge")
+        # Keep the judge model/provider fixed across keys for comparable scores.
+        _judge_client = clients[0].with_fallbacks(
+            clients[1:], exceptions_to_handle=(groq.APIError,)
+        ) if len(clients) > 1 else clients[0]
     return _judge_client
 
 
@@ -302,7 +314,16 @@ def _call_judge(
     last_judge_error = None
     try:
         client = _get_judge_client()
-        response = client.invoke(messages)
+        try:
+            response = client.invoke(messages)
+        except groq.RateLimitError as exc:
+            # A short shared TPM limit can affect every key; retry once after it clears.
+            message = str(exc)
+            wait = re.search(r"try again in (\d+(?:\.\d+)?)s", message, re.IGNORECASE)
+            if "tokens per minute" not in message.lower() or not wait or float(wait[1]) > 20:
+                raise
+            time.sleep(float(wait[1]) + 1)
+            response = client.invoke(messages)
         if token_tracker is not None:
             token_tracker.record(response)
         content = getattr(response, "content", None)

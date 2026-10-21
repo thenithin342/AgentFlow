@@ -36,6 +36,7 @@ from langchain_core.messages import AIMessage
 from langgraph.types import interrupt
 
 from backend.graph.messages import content_to_str
+from backend.graph.response_safety import redact_sensitive
 from backend.graph.state import AgentState
 
 # Non-guessable sentinel — a user who literally types "approve" as an edit
@@ -115,24 +116,31 @@ def human_review_node(state: AgentState) -> dict:
     name = _agent_name_for_route(state)
 
     if not state.get("review_required", False):
-        final = state.get("final_response") or ""
+        original = state.get("final_response") or ""
+        final = redact_sensitive(original)
         out: dict = {"review_required": False}
+        if final != original:
+            out["final_response"] = final
         if final and _should_append_assistant_message(state, final):
             out["messages"] = [AIMessage(content=final, name=name)]
         return out
 
     human_input = _normalize_resume_value(
-        interrupt({"draft": state.get("final_response")})
+        interrupt({"draft": redact_sensitive(state.get("final_response") or "")})
     )
 
     if human_input and human_input != APPROVE_SENTINEL:
-        out = {"final_response": human_input, "review_required": False}
-        if _should_append_assistant_message(state, human_input):
-            out["messages"] = [AIMessage(content=human_input, name=name)]
+        safe_edit = redact_sensitive(human_input)
+        out = {"final_response": safe_edit, "review_required": False}
+        if _should_append_assistant_message(state, safe_edit):
+            out["messages"] = [AIMessage(content=safe_edit, name=name)]
         return out
 
-    final = state.get("final_response") or ""
+    original = state.get("final_response") or ""
+    final = redact_sensitive(original)
     out = {"review_required": False}
+    if final != original:
+        out["final_response"] = final
     if final and _should_append_assistant_message(state, final):
         out["messages"] = [AIMessage(content=final, name=name)]
     return out

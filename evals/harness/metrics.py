@@ -188,10 +188,12 @@ def average_precision_at_k(relevant: set, retrieved: list, k: int) -> float:
         return 0.0
     hits = 0
     cumulative = 0.0
+    seen: set = set()
     for rank, item in enumerate(retrieved[:k], start=1):
-        if item in relevant:
+        if item in relevant and item not in seen:
             hits += 1
             cumulative += hits / rank
+            seen.add(item)
     return cumulative / len(relevant)
 
 

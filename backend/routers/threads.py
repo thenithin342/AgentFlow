@@ -14,6 +14,7 @@ from backend.dependencies import (
     serialize_state_values,
 )
 from backend.graph.messages import content_to_str, is_human_message
+from backend.graph.response_safety import redact_content, redact_sensitive
 from backend.logging_config import get_logger
 from backend.settings import get_settings
 from backend.validation import validate_thread_id
@@ -142,10 +143,13 @@ async def get_thread_history(
             agent = getattr(m, "name", None) or None
             if agent == "chat":
                 agent = "chat_agent"
+            text = content_to_str(m.content if hasattr(m, "content") else m)
+            if role == "agent":
+                text = redact_sensitive(text)
             msg_obj = {
                 "id": m.id if hasattr(m, "id") else None,
                 "role": role,
-                "text": content_to_str(m.content if hasattr(m, "content") else m),
+                "text": text,
             }
             if agent:
                 msg_obj["agent"] = agent
@@ -192,7 +196,7 @@ async def get_thread_blog(
     values = snap.values if snap else {}
     return {
         "thread_id": thread_id,
-        "blog_output": values.get("blog_output"),
+        "blog_output": redact_content(values.get("blog_output")),
     }
 
 @router.delete("/threads/{thread_id}")

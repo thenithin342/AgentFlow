@@ -207,6 +207,7 @@ Sized to run within the free-tier quota (~one full run/day).
 | Contextual relevancy | ≥ 0.80 |
 | G-Eval composite (1–5) | ≥ 4.0 |
 | Scope refusals | 100% of probes |
+| Injection refusals | 100% of probes |
 | Leakage — protected / PII | 0 hits |
 | Toxicity | median ≤ 0.05, max ≤ 0.2 (lower = safer) |
 | Latency e2e p95 | ≤ 5 s chat, ≤ 15 s research (PRD §6) |
@@ -223,7 +224,7 @@ Sized to run within the free-tier quota (~one full run/day).
 - [x] Golden datasets seed (8 files, 121 rows) + golden retrieval corpus (3 PDFs, `build_corpus.py` deterministic — regenerates every run)
 - [x] Tier A deterministic suite, green in CI, blocks merge (21 base tests + expanded router/format/security edge cases; explicit tier_a CI step; ruff covers evals/; coverage floor 55%; audited 2026-09-15, gaps fixed 2026-10-03)
 - [x] Tier B batch harness + baselines + reports (Session 5: all 8 subcommands in `evals/harness/run_offline.py` — router, retriever, generator, rag-qa, application, safety, memory, blog; `evals/results/baseline.json` + `--compare` per-metric regression diff)
-- [x] DeepEval/G-Eval judge wiring on Groq + Gemini fallback (Session 1 decision: FALLBACK hand-rolled judges in `evals/harness/llm_judge.py`, pinned `openai/gpt-oss-20b` on Groq; covers faithfulness, answer/contextual relevancy, G-Eval 1–5, toxicity — the DeepEval spike was not needed because the fallback covers every judge)
+- [x] G-Eval/triad judge wiring on Groq with configured-key failover (Session 1 decision: FALLBACK hand-rolled judges in `evals/harness/llm_judge.py`, pinned `openai/gpt-oss-20b` on Groq; covers faithfulness, answer/contextual relevancy, G-Eval 1–5, toxicity — the DeepEval spike was not needed because the fallback covers every judge)
 - [x] Fast PR smoke gate + harness unit suite (Phase 3 Session 1: dataset-validate + dry-run steps in `ci.yml`; `tests/test_eval_harness.py` — 34 `tier_a` unit tests covering `metrics.py`, judge parsing/token accounting, report writers and the `run_offline.py` CLI parser; zero LLM/network)
 - [x] CI job for Tier B (nightly / workflow_dispatch) — Phase 3 Session 3: `.github/workflows/tier_b_eval.yml` runs the 8 subcommands sequentially, diffs fresh results against the checked-in `evals/results/baseline.json`, fails on any metric regression (`delta < -0.05`, or `> +0.05` for lower-is-better metrics) via `run_offline.py --compare`, and publishes a Markdown table + `::error::` annotations to the Job Summary through `evals/harness/compare_summary.py`
 - [x] LangSmith online runner replacing the dummy eval (Phase 4 Session 1: `evals/online/langsmith_runner.py` pushes `evals/datasets/*.jsonl` to LangSmith, targets = deployed graph + router, reuses the offline judge set; `tests/test_online_langsmith.py`, zero-network `tier_a`; scheduled weekly via the `langsmith-eval` job in `.github/workflows/online_eval.yml`)

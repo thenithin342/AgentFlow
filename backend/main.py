@@ -182,6 +182,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
             checkpointer = AsyncSqliteSaver(conn) # type: ignore[assignment]
             try:
+                await checkpointer.setup()
                 app.state.checkpointer = checkpointer
                 # Expose the connection so /threads can query the checkpoints
                 # table directly. See postgres branch above for the why.

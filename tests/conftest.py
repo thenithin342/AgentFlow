@@ -25,15 +25,30 @@ shows xfailed (x) instead of FAILED (F). Non-LLM tests are unaffected.
 import os
 import shutil
 import sqlite3
+import tempfile
+from pathlib import Path
 
-# Isolate the sync test checkpointer from the async API DB (agentflow.db).
-# Must run before build_graph is imported so _DEFAULT_DB_PATH picks this up.
-os.environ.setdefault("CHECKPOINT_DB_PATH", "test_agentflow.db")
+# The cleanup fixture deletes its index root. Isolate every test store before
+# importing backend modules so a local run cannot delete real uploaded files.
+_TEST_STORAGE = tempfile.TemporaryDirectory(
+    prefix=".agentflow-tests-", dir=Path(__file__).resolve().parent
+)
+_TEST_ROOT = Path(_TEST_STORAGE.name)
+os.environ["CHECKPOINT_DB_PATH"] = str(_TEST_ROOT / "checkpoints.db")
+os.environ["FAISS_INDEX_DIR"] = str(_TEST_ROOT / "faiss")
+os.environ["LTM_INDEX_DIR"] = str(_TEST_ROOT / "ltm")
+
+
+def pytest_unconfigure(config):
+    _close_old_default_graph()  # Fixtures may not have run after a collection error.
+    _TEST_STORAGE.cleanup()
 
 # Disable Qdrant for tests — qdrant_client / langchain_qdrant are not installed
 # in the dev/test environment and the Cloud URL in .env is not accessible from CI.
 # Tests use FAISS + SQLite exclusively.
 os.environ["QDRANT_URL"] = ""
+os.environ["LANGCHAIN_TRACING_V2"] = "false"
+os.environ["LANGSMITH_TRACING"] = "false"
 
 import pytest
 
