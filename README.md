@@ -1,491 +1,442 @@
-<div align="center">
-
 # AgentFlow
 
-**A production-grade multi-agent knowledge assistant built on LangGraph**
+**A stateful AI assistant for web research, document analysis, conversational help, and structured blog writing.**
 
-[![Python](https://img.shields.io/badge/Python-3.11+-3776AB?style=flat-square&logo=python&logoColor=white)](https://python.org)
-[![LangGraph](https://img.shields.io/badge/LangGraph-1.x-1C3C3C?style=flat-square&logo=langchain&logoColor=white)](https://langchain-ai.github.io/langgraph/)
-[![FastAPI](https://img.shields.io/badge/FastAPI-0.115+-009688?style=flat-square&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
-[![React](https://img.shields.io/badge/React-18+-61DAFB?style=flat-square&logo=react&logoColor=black)](https://react.dev)
-[![Qdrant](https://img.shields.io/badge/Qdrant-Cloud-DC244C?style=flat-square&logo=qdrant&logoColor=white)](https://qdrant.tech)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow?style=flat-square)](LICENSE)
-[![Release](https://img.shields.io/github/v/release/thenithin342/AgentFlow?style=flat-square&color=brightgreen)](https://github.com/thenithin342/AgentFlow/releases/tag/v0.9.0)
+[![CI](https://github.com/thenithin342/AgentFlow/actions/workflows/ci.yml/badge.svg)](https://github.com/thenithin342/AgentFlow/actions/workflows/ci.yml)
+[![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![React](https://img.shields.io/badge/React-18-61DAFB?logo=react&logoColor=black)](https://react.dev/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-Stateful graph routing &middot; Parallel agent execution &middot; Durable checkpointing &middot; Human-in-the-loop review &middot; RAG over uploaded PDFs &middot; Token streaming
+AgentFlow combines a FastAPI backend, a LangGraph workflow, and a React interface. It routes each message to a specialist, retrieves evidence when needed, preserves conversation state, and supports approval or editing before a response is finalized.
 
----
+The project focuses on the engineering around an LLM: state management, tool execution, user isolation, provider failures, observability, and measurable answer quality.
 
-### 🚀 Live Demo &nbsp;&nbsp;&nbsp; 📝 Blog Post
+**Deployment links:** [Web app](https://agent-flow-smoky.vercel.app) · [API documentation](https://agentflow-pl48.onrender.com/docs)
 
-| | |
+> Deployment links may run an earlier revision. Evaluation results below describe local audit runs, not a guarantee about the hosted version.
+
+## Contents
+
+- [Capabilities](#capabilities)
+- [Architecture](#architecture)
+- [Design decisions and tradeoffs](#design-decisions-and-tradeoffs)
+- [Run locally](#run-locally)
+- [API overview](#api-overview)
+- [Evaluation and verification](#evaluation-and-verification)
+- [Configuration](#configuration)
+- [Security and deployment considerations](#security-and-deployment-considerations)
+- [Project structure](#project-structure)
+- [Explaining the project in an interview](#explaining-the-project-in-an-interview)
+- [Known limitations and next steps](#known-limitations-and-next-steps)
+
+## Capabilities
+
+| Capability | Implementation |
 |---|---|
-| **Frontend (Vercel)** | [agent-flow-smoky.vercel.app](https://agent-flow-smoky.vercel.app) |
-| **Backend API (Render)** | [agentflow-pl48.onrender.com/docs](https://agentflow-pl48.onrender.com/docs) |
-| **Technical Blog Post** | [Building Multi-Agent AI with LangGraph — dev.to](https://dev.to/thenithin342/building-multi-agent-ai-with-langgraph) |
-
-</div>
-
----
-
-## What is AgentFlow?
-
-AgentFlow is a full-stack multi-agent system that demonstrates every skill that separates an AI engineer who can build *production* agentic pipelines from one who wraps a single LLM call in a UI:
-
-- **Conditional routing** — an LLM classifies every query and dispatches it to the right specialist agent, not a hardcoded keyword switch
-- **Multi-agent coordination** — three independent agent nodes (Research, Analysis, Chat), a Synthesizer, and a Human Review checkpoint, all wired into a single LangGraph `StateGraph`
-- **Durable persistence** — every node transition is checkpointed to SQLite via `SqliteSaver`/`AsyncSqliteSaver`; sessions survive backend restarts
-- **Retrieval-augmented generation** — PDF upload → recursive chunking → Google `gemini-embedding-001` embeddings → per-thread FAISS index → cited retrieval
-- **Human-in-the-loop** — LangGraph `interrupt()` pauses execution so a human can approve or edit the draft before it reaches the user
-- **Real-time streaming** — FastAPI `StreamingResponse` wraps `astream_events` for token-level delivery to the React frontend
-
----
+| Intent routing | Four routes: research, analysis, chat, and blog. Document-aware overrides and deterministic fallback preserve useful behavior when classification fails. |
+| Web research | ReAct agent with Tavily search, Wikipedia, URL reading, and current date/time tools. |
+| Document analysis | PDF ingestion, thread-scoped retrieval, arithmetic calculator, restricted Python execution, and evidence-based synthesis. |
+| Conversational help | Shorter graph path that skips the synthesizer; document retrieval remains available. |
+| Blog writing | Structured output with a title, metadata, tags, and sections. |
+| Persistent conversations | Checkpointed graph state and thread history; SQLite by default, optional PostgreSQL checkpointing. |
+| Human review | LangGraph `interrupt()` pauses the workflow; `Command(resume=...)` continues with approval or an edited response. |
+| Memory | Short-term history compression and user-scoped long-term fact retrieval across threads. |
+| Live execution trace | Server-Sent Events expose node and tool progress, followed by the sanitized final answer. |
+| Access and feedback | JWT login, admin user management, authenticated thread access, and feedback capture. |
 
 ## Architecture
 
-![AgentFlow — Multi-Agent LangGraph Architecture](architecture.svg)
+```mermaid
+flowchart TD
+    UI[React interface] -->|Authenticated HTTP / SSE| API[FastAPI]
+    API --> Read[Read user memory]
+    Read --> Router{Intent router}
+    Router --> Research[Research agent]
+    Router --> Analysis[Analysis agent]
+    Router --> Chat[Chat agent]
+    Router --> Blog[Blog writer]
+    Research --> Synth[Evidence-based synthesizer]
+    Analysis --> Synth
+    Synth --> Review[Redaction and optional human review]
+    Chat --> Review
+    Blog --> Review
+    Review --> Compress{Compress older history?}
+    Compress -->|Yes| STM[Short-term summary]
+    Compress -->|No| Write[Write long-term facts]
+    STM --> Write
+    Write --> End[Complete turn]
 
-| Node | Model | Role |
+    Research -.-> Web[Web tools]
+    Analysis -.-> Tools[Calculator / restricted Python]
+    Analysis -.-> RAG[Thread-scoped document retrieval]
+    API -.-> Checkpoints[(SQLite / PostgreSQL checkpoints)]
+    RAG -.-> Vectors[(FAISS / Qdrant)]
+```
+
+Each turn selects **one specialist route**. Research and analysis pass through the synthesizer; chat and blog write their response directly. Specialist agents can make multiple tool calls within a turn. Parallel specialist fan-out is not implemented.
+
+### Request lifecycle
+
+1. **Authenticate and scope.** FastAPI validates the request. The authenticated user and client thread ID determine the internal checkpoint and document namespace.
+2. **Restore context.** LangGraph loads the checkpoint; the memory reader adds relevant user facts.
+3. **Route.** The classifier selects a specialist. Factual questions about uploaded documents are directed to analysis; explicit web-research requests retain the research route.
+4. **Collect evidence.** Agents call their tools. Analysis retrieves document context before model execution, so retrieval does not depend entirely on the model choosing a tool.
+5. **Produce a response.** For research and analysis, the synthesizer receives actual tool evidence. Document synthesis avoids using the unchecked agent draft as its factual source.
+6. **Review and persist.** Response redaction runs before delivery. Review mode exposes a sanitized draft for approval or editing. The graph then updates memory and completes the turn.
+
+### Retrieval pipeline
+
+```text
+PDF upload → parse pages → split text → embed chunks → thread-scoped vector store
+Question → vector candidates → lexical scoring + reciprocal rank fusion → evidence
+```
+
+- Chunks use `RecursiveCharacterTextSplitter` with an 800-character size and 150-character overlap.
+- Google embeddings default to `models/gemini-embedding-001`, with 3,072 dimensions.
+- Retrieval fetches a wider candidate pool and combines semantic and lexical ranks. Semantic order resolves fusion ties.
+- Document citations retain the original filename and page number.
+- FAISS is the local default. Configuring Qdrant enables shared vector storage for both documents and long-term memory.
+
+### Model roles
+
+These are **repository configuration defaults**, not claims about provider availability or pricing.
+
+| Role | Default model | Configuration |
 |---|---|---|
-| **Router** | `llama-3.3-70b-versatile` | Few-shot intent classification → routes to one of three agents |
-| **Research Agent** | `llama-3.1-8b-instant` | ReAct loop: Tavily web search + per-thread FAISS retrieval |
-| **Analysis Agent** | `llama-3.1-8b-instant` | ReAct loop: sandboxed AST calculator + FAISS retrieval |
-| **Chat Agent** | `llama-3.1-8b-instant` | RAG-aware fast path — skips the Synthesizer for low-latency replies |
-| **Synthesizer** | `llama-3.3-70b-versatile` | Polishes raw agent output into a clean, cited final response |
-| **Human Review** | — | `interrupt()` gate — pauses execution for human approve / edit |
+| Router and specialist tool loops | Groq `openai/gpt-oss-20b` | `GROQ_FAST_MODEL` |
+| Synthesizer and blog writer | Groq `openai/gpt-oss-120b` | `GROQ_SMART_MODEL` |
+| Application LLM fallback | Google `gemini-2.5-flash` | `GOOGLE_MODEL` |
+| Document and memory embeddings | Google `models/gemini-embedding-001` | `EMBED_MODEL`, `EMBED_DIM` |
 
-All seven nodes share a single `AgentState` TypedDict. Every transition is checkpointed to SQLite so the graph can be paused, resumed, or replayed from any prior state.
+The application tries configured Groq keys and can fall back to Gemini. Keys belonging to the same organization may share quota. Evaluation judges keep a fixed model/provider for comparable scores; application fallback and judge fallback have different requirements.
 
----
+## Design decisions and tradeoffs
 
-## Features
+| Decision | Reason | Tradeoff |
+|---|---|---|
+| Explicit LangGraph workflow | Makes routing, checkpoints, review interrupts, and memory transitions inspectable. | More orchestration code than a single prompt chain. |
+| Separate fast and smart model roles | Reserves the larger model for synthesis and structured writing. | Additional synthesis calls increase latency and token use. |
+| Mandatory retrieval for document analysis | Prevents a model from answering a document question without consulting the document. | Retrieval adds latency and can still return incomplete evidence. |
+| Semantic and lexical rank fusion | Preserves meaning-based matches while promoting useful exact terms. | The lexical normalization is English-oriented and is not a learned reranker. |
+| SQLite and FAISS defaults | Keeps local setup small and state easy to inspect. | Local files and process-local coordination limit deployment scaling. |
+| SSE progress with buffered answer text | Keeps execution visible while allowing redaction before answer text reaches the client. | Users wait for generation to finish before seeing answer text. |
+| Checkpointed human review | Approval survives beyond a single HTTP request and resumes the same graph. | Clients must handle interrupted and completed turns separately. |
 
-| Feature | Implementation |
-|---|---|
-| **Intent router** | `llama-3.3-70b` with a few-shot system prompt; falls back to `chat` on any LLM error |
-| **Research agent** | ReAct loop with `tavily_search` + per-thread `retrieve_documents` |
-| **Analysis agent** | ReAct loop with sandboxed AST calculator + per-thread `retrieve_documents` |
-| **Chat agent** | ReAct loop, RAG-aware, skips the synthesizer for low-latency replies |
-| **Synthesizer** | `llama-3.3-70b` polishes raw agent output into a clean cited final response |
-| **Human review** | LangGraph `interrupt()` / `Command(resume=...)` with approve/edit contract |
-| **Durable state** | `SqliteSaver` (sync tests) + `AsyncSqliteSaver` (FastAPI server) keyed by `thread_id` |
-| **RAG pipeline** | `PyPDFLoader` → `RecursiveCharacterTextSplitter(800, 150)` → `gemini-embedding-001` → FAISS |
-| **Streaming** | `astream_events(version="v2")` filtered to `on_chat_model_stream`, piped as SSE |
-| **Security** | `<<UNTRUSTED …>>` prompt injection barriers; AST-validated calculator; optional bearer-token API key |
-| **LLM fallback** | Up to 3 Groq keys in `RunnableWithFallbacks` chain + Gemini 2.0 Flash as last resort |
-| **Agent cache** | LRU-128 `OrderedDict` per `(tool names, model, prompt hash, thread_id)` avoids redundant `create_react_agent` compiles |
-
----
-
-## Quick Start
+## Run locally
 
 ### Prerequisites
 
-| Tool | Version | Where to get it |
-|---|---|---|
-| Python | 3.11+ | [python.org](https://python.org) |
-| Node.js | 18+ | [nodejs.org](https://nodejs.org) |
-| Groq API key | free | [console.groq.com](https://console.groq.com) |
-| Tavily API key | free (1 000 searches/mo) | [tavily.com](https://tavily.com) |
-| Google AI Studio key | required for embeddings (RAG + memory); free 1 M tokens/day | [aistudio.google.com](https://aistudio.google.com) |
+- Python **3.11+**; the backend CI uses Python 3.12.
+- Node.js **20.19+ on the 20.x line, or 22.12+** for the installed Vite version.
+- A Groq key for the default LLM path, a Google AI key for embeddings and Gemini fallback, and a Tavily key for web research.
 
-### 1 — Clone and install Python deps
+Provider access and quotas depend on your account. Chat may run without all tool providers, but document ingestion and memory embeddings require Google access, and web search requires Tavily.
+
+### 1. Install the backend
 
 ```bash
-git clone https://github.com/thenithin342/agentflow.git
-cd agentflow
-
+git clone https://github.com/thenithin342/AgentFlow.git
+cd AgentFlow
 python -m venv venv
-# Windows
-venv\Scripts\activate
+```
+
+Activate the environment:
+
+```powershell
+# Windows PowerShell
+.\venv\Scripts\Activate.ps1
+```
+
+```bash
 # macOS / Linux
 source venv/bin/activate
-
-pip install -r requirements.txt
 ```
-
-### 2 — Configure environment variables
 
 ```bash
-cp .env.example .env
+python -m pip install -r requirements.txt
+python -c "import shutil; shutil.copyfile('.env.example', '.env')"
 ```
 
-Open `.env` and fill in your keys:
+### 2. Configure credentials
 
-```env
-# Required
-GROQ_API_KEY=gsk_...
-TAVILY_API_KEY=tvly-...
+Edit `.env`. Set the following values; placeholders are intentionally not usable credentials:
 
-# Required for RAG uploads + long-term memory (embeddings), also the Gemini fallback
-GOOGLE_API_KEY=AIza...
-
-# Optional — rotate across up to 3 Groq keys for higher TPM
-GROQ_API_KEY_2=gsk_...
-GROQ_API_KEY_3=gsk_...
-
-# Defaults — no changes needed for local dev
-CHECKPOINT_DB_PATH=agentflow.db
+```dotenv
+ENVIRONMENT=dev
+ADMIN_USERNAME=admin
+ADMIN_PASSWORD=<choose-a-strong-password>
+JWT_SECRET=<generate-a-random-secret>
+GROQ_API_KEY=<your-groq-key>
+GOOGLE_API_KEY=<your-google-ai-key>
+TAVILY_API_KEY=<your-tavily-key>
 LANGCHAIN_TRACING_V2=false
+LANGSMITH_TRACING=false
 ```
 
-> `.env` is listed in `.gitignore`. **Never commit it.**
-
-### 3 — Start the backend
+Generate a JWT secret locally with:
 
 ```bash
-uvicorn backend.main:app --reload --port 8000
+python -c "import secrets; print(secrets.token_hex(32))"
 ```
 
-The server logs confirm the graph compiled and the embedding provider is reachable:
+The admin account is bootstrapped on a fresh user store. Changing `ADMIN_PASSWORD` later does not update an existing account; use the admin password-management endpoint. Keep `.env` and runtime state out of Git.
 
-```
-[AgentFlow] graph compiled OK; async checkpointer on agentflow.db
+### 3. Start the backend
+
+```bash
+python -m uvicorn backend.main:app --reload --port 8000
 ```
 
-### 4 — Start the frontend
+- API documentation: [http://localhost:8000/docs](http://localhost:8000/docs)
+- Liveness: [http://localhost:8000/healthz](http://localhost:8000/healthz)
+- Readiness: [http://localhost:8000/readyz](http://localhost:8000/readyz)
+
+Readiness includes dependency checks and can report unavailable embeddings even when the HTTP server is running.
+
+### 4. Start the frontend
+
+In another terminal:
 
 ```bash
 cd frontend
-npm install
+npm ci
 npm run dev
 ```
 
-Open [http://localhost:5173](http://localhost:5173) — the Vite dev server proxies `/chat`, `/upload`, and `/review` requests to port 8000 automatically.
+Open [http://localhost:5173](http://localhost:5173) and sign in with the configured admin credentials. Vite proxies API requests to the local backend. A separately hosted frontend uses `VITE_API_BASE` to select its API origin.
 
-### 5 — Run the test suite
+### 5. Try a complete workflow
 
-```bash
-# from the repo root, venv active
-pytest tests/ -v
-```
+1. Start a new chat and upload a text-based PDF.
+2. Ask a factual question about the document and inspect its source references.
+3. Start another chat and request current web research; inspect tool progress.
+4. Enable review mode, submit a question, and approve or edit the draft.
+5. Restart the backend and reopen the thread to verify persisted state.
 
----
+## API overview
 
-## API Reference
+Protected endpoints accept `Authorization: Bearer <access_token>`. Login returns a JWT. A configured static API key is also supported for service access; it represents a shared identity.
 
-All endpoints accept and return JSON. Streaming responses use Server-Sent Events (SSE).
+| Endpoint | Purpose |
+|---|---|
+| `POST /auth/login` | Exchange username/password for an access token. |
+| `POST /auth/refresh` | Renew an eligible token. |
+| `POST /chat` | Run a conversation turn and receive SSE events. |
+| `POST /upload` | Upload a PDF using multipart fields `file` and `thread_id`. |
+| `POST /review/{thread_id}` | Approve or edit an interrupted turn. |
+| `GET /threads` | List the authenticated user's conversations. |
+| `GET /threads/{thread_id}/history` | Read conversation history. |
+| `GET /threads/{thread_id}/state` | Inspect current graph state. |
+| `GET /threads/{thread_id}/blog` | Read structured blog output. |
+| `DELETE /threads/{thread_id}` | Delete a conversation and its associated data. |
+| `POST /feedback` | Record user feedback. |
+| `/admin/users` | Admin user listing, creation, deletion, and password management. |
+| `GET /healthz`, `GET /readyz` | Public liveness and readiness probes. |
 
-### `POST /chat`
+The generated [OpenAPI schema](http://localhost:8000/docs) is the detailed request/response reference. `/chat` uses JSON input; `/upload` uses multipart input; review returns JSON.
 
-Stream a response for a given conversation thread.
-
-**Request body**
+### Chat request
 
 ```json
 {
-  "thread_id": "my-session-abc123",
-  "message": "What are the latest LLM benchmark results?",
+  "thread_id": "interview-demo",
+  "message": "Summarize the uploaded report and cite the relevant pages.",
   "review_required": false
 }
 ```
 
-| Field | Type | Description |
-|---|---|---|
-| `thread_id` | `string` | Stable ID scoping the conversation; alphanumeric + `-_` |
-| `message` | `string` | User message, max 16 000 characters |
-| `review_required` | `bool` | When `true`, graph pauses at Human Review for approval |
+Messages are limited to 16,000 characters. Thread IDs must match `^[a-zA-Z0-9_-]{1,128}$`. PDF uploads are limited to 50 MiB; malformed PDFs return HTTP 400.
 
-**Response** — SSE stream of JSON objects:
+### SSE contract
 
-```jsonc
-// Agent trace event
-{"type": "trace", "node": "research_agent", "status": "started"}
+```text
+data: [NODE_START:research_agent|t=2026-10-21T10:00:00.000Z]
 
-// Token chunk
-{"type": "token", "content": "The latest benchmark..."}
+data: [TOOL_START:tavily_search]
 
-// Interrupt — requires /review
-{"type": "interrupt", "draft": "Here is the draft response..."}
+data: [NODE_END:research_agent]
 
-// Stream complete
-{"type": "done", "final_response": "...", "sources": ["https://..."], "route": "research"}
+data: [FINAL:"A sanitized answer supported by the retrieved evidence."]
+
+data: [SOURCES:2]
+
+data: [DONE]
 ```
 
----
+`[FINAL:...]` contains a JSON-encoded string and replaces any prior draft in the client. `[SOURCES:n]` is a source count. Review mode ends with `[INTERRUPT]` instead of `[DONE]`; the sanitized response is then a reviewable draft. Error and fallback frames are handled separately by the client.
 
-### `POST /upload`
-
-Ingest a PDF into the thread's FAISS vector index.
-
-**Request** — `multipart/form-data`
-
-| Field | Type | Description |
-|---|---|---|
-| `file` | `file` | PDF file, max 50 MB |
-| `thread_id` | `string` | Thread to scope the index to |
-
-**Response**
-
-```json
-{
-  "document_id": "report.pdf:42",
-  "source": "report.pdf",
-  "pages": 8,
-  "chunks": 42
-}
-```
-
----
-
-### `GET /threads/{thread_id}/state`
-
-Fetch the current graph state snapshot for a thread (useful for debugging or resuming).
-
-**Response** — the serialised `AgentState` dict plus checkpoint metadata.
-
----
-
-### `POST /review/{thread_id}`
-
-Resume a paused graph after a Human Review interrupt.
-
-**Request body**
+Resume requests:
 
 ```json
 { "action": "approve" }
 ```
 
 ```json
-{ "action": "edit", "edited_response": "Here is my improved version..." }
+{ "action": "edit", "edited_response": "The reviewed response." }
 ```
 
-| Field | Description |
+## Evaluation and verification
+
+AgentFlow separates software correctness from model quality. Passing unit tests does not establish that answers are faithful or that a live provider meets a latency target.
+
+### Evaluation layers
+
+| Layer | What it checks |
 |---|---|
-| `action` | `"approve"` keeps the existing draft; `"edit"` replaces it |
-| `edited_response` | Required when `action` is `"edit"` |
+| Deterministic Tier A | Routing/orchestration contracts, tool boundaries, schemas, retrieval structure, and safety regression cases using controlled inputs. |
+| Real-provider Tier B | Eight golden datasets covering router, retriever, generator, RAG-QA, application, safety, memory, and blog behavior. |
+| Online/API checks | Authentication, SSE, PDF upload and document QA, review/resume, readiness, and latency. |
 
----
+The eight datasets contain **146 rows**. Retrieval uses recall and average precision at k; generation and RAG use faithfulness and relevancy judges. Application/blog rubrics, safety probes, and memory roundtrips cover different failure modes. Thresholds live in [`evals/config.yaml`](evals/config.yaml).
 
-### `GET /health`
+Reports retain dataset/config hashes, code fingerprints, model settings, errors, and completeness information. Judge failures and quota exhaustion must remain visible. A no-regression result against a weak baseline is not sufficient to pass absolute quality gates. Full RAG scoring uses the evidence actually returned by the graph.
 
-Liveness probe — always returns `{"status": "ok"}`. No auth required.
-
----
-
-## Project Structure
-
-```
-agentflow/
-│
-├── backend/
-│   ├── main.py              # FastAPI app — lifespan, endpoints, SSE streaming
-│   ├── auth.py              # JWT auth + SQLite user store + CRUD helpers
-│   ├── settings.py          # Pydantic Settings — all env vars in one place
-│   ├── llm.py               # Lazy LLM singletons; 3-key Groq pool + Gemini fallback
-│   ├── constants.py         # Upload/message limits; SSE node sets
-│   ├── validation.py        # thread_id regex + validator
-│   ├── security.py          # HMAC file signing for FAISS indexes
-│   ├── dependencies.py      # FastAPI deps — rate-limit key, SSE helper, state helpers
-│   ├── token_utils.py       # Token budget guard — estimate + truncate message history
-│   │
-│   ├── graph/
-│   │   ├── state.py         # AgentState TypedDict
-│   │   ├── router.py        # router_node + route_query conditional edge
-│   │   ├── agents.py        # research / analysis / chat / blog agent nodes
-│   │   ├── tools.py         # tavily_search, AST calculator, retrieve_documents
-│   │   ├── synthesizer.py   # synthesizer_node; prompt-injection barriers
-│   │   ├── human_review.py  # human_review_node; interrupt() / Command(resume=...)
-│   │   └── build_graph.py   # StateGraph topology
-│   │
-│   ├── memory/
-│   │   └── ltm.py           # Long-Term Memory; auto-selects Qdrant or FAISS
-│   │
-│   ├── rag/
-│   │   └── ingest.py        # ingest_pdf() + get_retriever(); auto-selects Qdrant or FAISS
-│   │
-│   ├── vectorstore/
-│   │   └── qdrant_store.py  # Qdrant adapter
-│   │
-│   └── routers/
-│       ├── auth.py          # POST /auth/login, /auth/refresh
-│       ├── admin.py         # Full CRUD /admin/users
-│       ├── chat.py          # POST /chat SSE streaming
-│       ├── upload.py        # POST /upload PDF ingestion
-│       ├── threads.py       # GET /threads, /threads/{id}/state
-│       └── health.py        # GET /healthz, /readyz
-│
-├── frontend/
-│   └── src/
-│       ├── App.jsx              # Root component — auth gate, tab router, JWT renewal
-│       ├── LoginScreen.jsx      # Login form
-│       ├── ErrorBoundary.jsx    # Per-message error isolation
-│       ├── auth.js              # Token storage + expiry helpers
-│       ├── constants.js         # AGENT_COLORS + upload limits
-│       ├── utils.js             # uuid, parseCitations, agentLabelFromRoute
-│       ├── hooks/
-│       │   └── useSSE.js        # SSE reader hook with stall-hint watchdog
-│       ├── api/
-│       │   └── client.js        # Authenticated fetch + silent JWT refresh
-│       ├── components/
-│       │   ├── Chat/
-│       │   │   ├── MessageBubble.jsx  # Markdown + syntax highlighting (PrismLight)
-│       │   │   ├── ChatInput.jsx      # Textarea + upload button
-│       │   │   └── SourceChips.jsx    # Citation chips
-│       │   └── Sidebar/
-│       │       └── Sidebar.jsx        # Thread list + new-thread button
-│       ├── pages/
-│       │   ├── AdminPage.jsx    # User management CRUD UI
-│       │   └── BlogPage.jsx     # Blog generation UI
-│       ├── index.css            # CSS design tokens + layout
-│       └── main.jsx
-│
-├── tests/
-│   ├── conftest.py          # Fixtures; rate-limit xfail guard
-│   ├── test_graph.py        # End-to-end graph tests (RAG, human-review, multi-turn)
-│   ├── test_api.py          # FastAPI endpoint tests (/chat SSE, /upload, /review)
-│   ├── test_api_blog.py     # Blog-agent API tests
-│   ├── test_api_delete.py   # Thread delete API tests
-│   ├── test_router.py       # 20+ router classification examples
-│   ├── test_tools.py        # Calculator boundary conditions
-│   ├── test_messages.py     # content_to_str for all message content variants
-│   ├── test_memory.py       # STM compressor + LTM read/write
-│   ├── test_token_utils.py  # Token budget estimate + truncation
-│   └── test_dependencies.py # Rate-limit key selection + SSE helper
-│
-├── faiss_indexes/           # Per-thread FAISS indexes (git-ignored)
-├── ltm_indexes/             # Per-user LTM FAISS indexes (git-ignored)
-├── agentflow.db             # SQLite checkpoint + user store (git-ignored)
-├── CHANGELOG.md             # Version history
-├── .env.example             # Environment variable template
-├── requirements.txt         # Production deps
-├── docker-compose.yml       # SQLite / Postgres / Qdrant profiles
-└── Dockerfile
-```
-
----
-
-## Tech Stack
-
-| Layer | Choice | Notes |
-|---|---|---|
-| **Orchestration** | LangGraph 1.x + LangChain 0.3 | `StateGraph`, conditional edges, `interrupt`, `AsyncSqliteSaver` |
-| **Smart LLM** | Groq `llama-3.3-70b-versatile` | Router + Synthesizer — quality gate |
-| **Fast LLM** | Groq `llama-3.1-8b-instant` | Agent tool-calling — 30 K TPM free tier |
-| **LLM fallback** | Google Gemini 2.0 Flash | 1 M tokens/day; appended as last fallback |
-| **Local LLM** | Ollama + Qwen3-8B *(optional)* | Fully offline dev, zero API cost |
-| **Web search** | Tavily (`langchain-tavily`) | Purpose-built for LLM agents; 1 000 searches/mo free |
-| **Calculator** | Custom AST evaluator | Rejects names/calls/attributes; caps expression length, depth, exponents |
-| **Vector store** | FAISS `faiss-cpu` | Local, no hosted service; per-thread isolation |
-| **Embeddings** | `gemini-embedding-001` (Google API) | Zero local memory — avoids the ONNX model's ~120 MB resident cost on Render; model/dim set via `EMBED_MODEL` / `EMBED_DIM` |
-| **Persistence** | SQLite (`SqliteSaver` / `AsyncSqliteSaver`) | Zero-setup; `PostgresSaver` documented as upgrade path |
-| **Backend** | FastAPI 0.115 + Uvicorn | Async; `StreamingResponse` + `astream_events` for SSE |
-| **Frontend** | React 18 + Vite 7 + Vanilla CSS | `react-markdown`, `react-syntax-highlighter` (PrismLight), SSE streaming reader |
-| **Config** | `python-dotenv` | `.env` file; never committed |
-| **Testing** | pytest + pytest-asyncio + httpx | Node-level, graph-level, and full API tests |
-
-> **Cost:** every component above runs on a free tier or local compute. There are no required paid services.
-
----
-
-## Build Phases
-
-The project is built in incremental phases. Each phase proves the previous one's wiring before adding complexity.
-
-### Core Sprints
-
-| # | What gets built | Status |
-|---|---|---|
-| 1 | Single-node graph skeleton compiles and runs | ✅ Complete |
-| 2 | Router classifies queries via conditional edges | ✅ Complete |
-| 3 | Research / Analysis / Chat agent nodes with tools | ✅ Complete |
-| 4 | SQLite checkpointer — state persists across restarts | ✅ Complete |
-| 5 | Synthesizer merges agent output into final response | ✅ Complete |
-| 6 | Human-in-the-loop review via `interrupt()` | ✅ Complete |
-| 7 | RAG pipeline — PDF upload, FAISS retrieval | ✅ Complete |
-| 8 | FastAPI streaming backend + React frontend | ✅ Complete |
-| 9 | JWT auth, rate-limiting, LTM, Blog agent, Admin panel | ✅ Complete |
-| 10 | Qdrant vector store, SQLite user store, full CRUD admin | ✅ Complete |
-
-### Modernisation Audit (Phases 1–5)
-
-| Phase | Focus | Key Changes | Status |
-|---|---|---|---|
-| **M-1** | Security | Admin password hashing, rate-limit key fixes, `Depends()` wiring | ✅ Complete |
-| **M-2** | UX | Theme persistence, `aria-hidden` accessibility, per-message `ErrorBoundary` | ✅ Complete |
-| **M-3** | UX | Escalating stall hints in `useSSE`, router fallback banner, blog toast, review discard | ✅ Complete |
-| **M-4** | DX / CI | Centralised `AGENT_COLORS`, ESLint CI gate, `--cov-fail-under=46`, Dependabot | ✅ Complete |
-| **M-5** | Architecture | Token budget guard (`token_utils.py`), per-user proxy-aware rate limiting | ✅ Complete |
-
----
-
-## Testing
+### Run the checks
 
 ```bash
-# Full offline suite (excludes tests that require live API keys)
-pytest tests/ -v -m "not eval"
-
-# Single test file
-pytest tests/test_graph.py -v -m "not eval"
-
-# With coverage (coverage gate: 46% minimum enforced in CI)
-pytest tests/ -m "not eval" --cov=backend --cov-report=term-missing --cov-fail-under=46
+python -m pip install -r requirements-dev.txt
+python evals/harness/validate_datasets.py
+python -m evals.harness.run_offline --dry-run
+python -m pytest -m tier_a -q
+ruff check backend tests evals
 ```
 
-**Test categories**
+```bash
+# Backend suite and the current CI coverage gate
+python -m pytest -m "not eval" --cov=backend --cov-report=term-missing --cov-fail-under=54
 
-| File | What it covers |
+# Run these from frontend/
+npm run lint
+npm run test -- --run
+npm run build
+```
+
+Some integration tests run live when provider credentials are available. The `not eval` marker excludes the LangSmith evaluation test; it is not a universal network-disable switch. Use an isolated test environment without provider credentials or a populated `.env` for the offline run. Test storage is isolated from application uploads and checkpoints.
+
+Real-provider examples consume quota:
+
+```bash
+python -m evals.harness.run_offline router --out evals/results/my-run
+python -m evals.harness.run_offline retriever --out evals/results/my-run
+python -m evals.harness.run_offline rag-qa --out evals/results/my-run
+```
+
+The implemented judges use the existing provider SDKs. DeepEval is not required for this harness. See [`evals/README.md`](evals/README.md) for the complete evaluation commands and report interpretation.
+
+### Local audit snapshot — 21 October 2026
+
+| Check | Observed result |
 |---|---|
-| `test_router.py` | 20+ labelled classification examples to catch routing drift |
-| `test_tools.py` | Calculator boundary conditions — overflow, depth, syntax errors |
-| `test_messages.py` | `content_to_str` for all message content variants |
-| `test_graph.py` | Full graph — research, analysis, chat, human-review interrupt, multi-turn memory, RAG |
-| `test_api.py` | FastAPI endpoints — `/chat` SSE, `/upload`, `/review`, `/health`, auth |
-| `test_api_blog.py` | Blog agent endpoint |
-| `test_api_delete.py` | Thread delete endpoint |
-| `test_memory.py` | STM compressor (`RemoveMessage`) and LTM read/write |
-| `test_token_utils.py` | Token budget estimation and history truncation |
-| `test_dependencies.py` | Per-user rate-limit key selection and SSE formatting |
+| Backend suite | 440 passed, 23 skipped, 1 deselected; 63.66% coverage. |
+| Final retrieval repair tests | 5 focused ranking tests passed after the full suite. |
+| Frontend | 60 tests passed; lint and production build passed. |
+| Router | 43/44 correct, with no provider errors. |
+| Retriever | Recall 0.9583 and AP@5 0.8368; aggregate gates passed. |
+| Memory | Entity recall and cross-thread roundtrip both 1.0; extraction precision remained informational. |
+| Real local API suite | 5/6 scenarios passed; research latency was 21.161 seconds against a 15-second target. |
+| Full RAG/application acceptance | Incomplete: fixed-model judge calls exhausted the provider's daily quota. |
 
-**Note on rate limits.** The Groq free tier is capped at 100 K tokens/day. Tests that hit this cap are automatically marked `xfail` by the `_rate_limit_guard` autouse fixture — the suite shows `x` instead of `FAILED`. Tests requiring a live API key are marked `@pytest.mark.eval` and excluded from CI with `-m 'not eval'`.
+These are separate audit runs, not a single all-green release batch. Small synthetic datasets provide regression evidence, not a general accuracy guarantee. The baseline was not promoted. See [`EVAL_AUDIT_2026-10-19.md`](EVAL_AUDIT_2026-10-19.md) for fixes, provenance, earlier results, and outstanding work.
 
----
+## Configuration
 
-## Configuration Reference
+[`.env.example`](.env.example) lists the full configuration; [`backend/settings.py`](backend/settings.py) defines typed application settings.
 
-| Variable | Default | Required | Description |
-|---|---|---|---|
-| `GROQ_API_KEY` | — | **Yes** | Primary Groq API key |
-| `GROQ_API_KEY_2` | — | No | Secondary Groq key (rate-limit fallback) |
-| `GROQ_API_KEY_3` | — | No | Tertiary Groq key |
-| `TAVILY_API_KEY` | — | **Yes** | Tavily search API key |
-| `GOOGLE_API_KEY` | — | Yes (RAG + memory) | Google AI Studio key — required for embeddings (RAG + long-term memory); also the Gemini LLM fallback |
-| `EMBED_MODEL` | `models/gemini-embedding-001` | No | Embedding model id — change this (not code) when Google retires a model |
-| `EMBED_DIM` | `3072` | No | Embedding vector size; must match `EMBED_MODEL`'s output and the Qdrant collection size |
-| `CHECKPOINT_DB_PATH` | `agentflow.db` | No | SQLite checkpoint file path |
-| `CORS_ORIGINS` | `http://localhost:5173` | No | Comma-separated allowed origins |
-| `AGENTFLOW_API_KEY` | — | No | Bearer token for optional API auth |
-| `LANGCHAIN_TRACING_V2` | `false` | No | Enable LangSmith tracing |
-| `LANGCHAIN_API_KEY` | — | No | LangSmith API key |
+| Setting | Purpose / default |
+|---|---|
+| `ENVIRONMENT` | `dev` by default; production requires an explicit JWT secret. |
+| `ADMIN_USERNAME`, `ADMIN_PASSWORD` | Bootstrap credentials for a new user store. |
+| `JWT_SECRET` | Stable token-signing secret; development otherwise uses an ephemeral secret. |
+| `AGENTFLOW_API_KEY` | Optional static service credential. |
+| `GROQ_API_KEY`, `_2`, `_3` | Primary and optional fallback Groq keys. |
+| `GOOGLE_API_KEY` | Embedding access and application Gemini fallback. |
+| `TAVILY_API_KEY` | Web search access. |
+| `GROQ_FAST_MODEL`, `GROQ_SMART_MODEL`, `GOOGLE_MODEL` | Override application model IDs without editing graph code. |
+| `EMBED_MODEL`, `EMBED_DIM` | Embedding model and dimension; default dimension 3,072. |
+| `CHECKPOINT_DB_PATH` | Local SQLite checkpoint/user database; default `agentflow.db`. |
+| `POSTGRES_CONN_STRING` | Enables PostgreSQL graph checkpointing. |
+| `FAISS_INDEX_DIR`, `LTM_INDEX_DIR` | Local vector-index locations. |
+| `QDRANT_URL`, `QDRANT_API_KEY` | Optional shared vector store for documents and memory. |
+| `AGENTFLOW_SECRET_DIR` | Directory containing the persistent FAISS signing secret. |
+| `CORS_ORIGINS` | Allowed browser origins; use explicit origins in production. |
+| `LANGCHAIN_TRACING_V2`, `LANGCHAIN_API_KEY` | Optional LangSmith tracing configuration. |
+| `STREAM_TIMEOUT_SECONDS` | Backend chat-stream ceiling; default 300 seconds. |
+| `VITE_API_BASE` | Frontend build-time API origin when using a separate host. |
 
----
+Changing embedding dimensions or models requires a deliberate index migration/rebuild. Keep persistent paths and signing secrets stable across restarts.
 
-## Security Notes
+## Security and deployment considerations
 
-- **Prompt injection** — user queries and agent outputs are wrapped in `<<UNTRUSTED …>>` / `<<END …>>` delimiters before being interpolated into synthesizer prompts. The system prompt instructs the model to treat everything inside as raw data.
-- **Calculator** — expressions are parsed with `ast.parse(mode="eval")` and evaluated against a strict whitelist of numeric constants and arithmetic operators. Names, function calls, and attribute access all raise `ValueError`. Expression length, AST node count, exponent magnitude, and base magnitude are all capped.
-- **File uploads** — rejected above 50 MB at the HTTP header level (before the body is buffered). `thread_id` values are validated against `^[a-zA-Z0-9_-]{1,128}$` on every endpoint.
-- **API key auth** — optional; when `AGENTFLOW_API_KEY` is set, all routes except `/health` require `Authorization: Bearer <key>` or `X-API-Key: <key>`.
+- **Identity boundaries:** JWT authentication scopes conversations and retrieval to users. Static API-key callers share a service identity; use individual logins when isolation between people is required.
+- **Response handling:** final output, review drafts, and serialized history/state receive targeted redaction. Prompt delimiters and deterministic refusals add narrow safeguards; they do not establish general prompt-injection immunity.
+- **Tool execution:** the calculator permits a constrained arithmetic AST. Python execution uses validation, restricted builtins, and a child-process timeout. This is not an operating-system security sandbox for arbitrary hostile code.
+- **Uploads and indexes:** PDF size/type validation and signed FAISS artifacts reduce specific risks. Maintain control over the index directories and signing key.
+- **Persistence:** SQLite/FAISS suit a single-instance deployment. PostgreSQL checkpoints and Qdrant address shared state, but the user/feedback database remains SQLite and coordination includes process-local locks. Switching those two backends alone does not make the entire application horizontally scalable.
+- **Hosting:** preserve the database, indexes, and signing secret on persistent storage. Keep provider credentials on the backend and configure explicit production CORS origins. Tracing can send conversation/tool content to an external service; enable it deliberately.
+- **Delivery:** the repository includes backend/frontend CI and a conditional Render deploy-hook job on pushes to `main`. A push can trigger hosting automation when repository secrets or hosting integrations are configured.
 
----
+## Project structure
 
-## Future Extensions
+```text
+backend/
+  main.py                 FastAPI lifespan, middleware, graph initialization
+  settings.py             Typed environment configuration
+  auth.py                 Authentication and user-store helpers
+  llm.py                  Lazy model clients, token budgets, provider fallback
+  graph/
+    build_graph.py        Workflow topology and graph factories
+    router.py             Intent classification and route policy
+    agents.py             Research, analysis, and chat execution
+    blog_agent.py         Structured blog generation
+    synthesizer.py        Evidence-based final response
+    human_review.py       Interrupt/resume and response handling
+    memory_nodes.py       Memory transitions
+    response_safety.py    Targeted refusal and redaction rules
+    tools.py              Search, retrieval, calculator, and Python tools
+  rag/                    PDF ingestion and retrieval ranking
+  memory/                 Long-term facts and short-term compression
+  vectorstore/            Qdrant adapter
+  routers/                Auth, chat, upload, threads, admin, feedback, health
+frontend/
+  src/                    React UI, authenticated API client, SSE reader
+  tests/                  Component and hook regressions
+evals/
+  datasets/               Golden JSONL cases and synthetic PDF corpus
+  harness/                Batch runners, judges, metrics, provenance, reports
+  online/                 API checks, monitoring, feedback analysis
+tests/                    Backend and evaluation-harness regressions
+.github/workflows/        CI and evaluation automation
+```
 
-- **Parallel multi-agent dispatch** — fan out to multiple agents simultaneously for compound queries (e.g., *"research X and calculate Y"*), re-joining at the Synthesizer via LangGraph fan-out edges
-- **WebSocket transport** — replace SSE with a full-duplex WebSocket for lower-latency bidirectional messaging
-- **Voice interface** — pipe STT (Whisper) → agent graph → TTS (ElevenLabs) for a hands-free assistant experience
-- **Multi-modal inputs** — accept image uploads and route to a vision-capable model for diagram analysis
+## Explaining the project in an interview
 
----
+### A concise introduction
+
+> “I built AgentFlow to explore how an AI assistant can keep state, use tools, and produce answers that can be evaluated. A FastAPI API drives a LangGraph workflow that selects research, analysis, chat, or blog writing. Document questions retrieve thread-scoped evidence, and research/analysis answers go through a synthesizer. Checkpoints support conversation recovery and human approval. I evaluate the orchestration separately from real-model quality so passing software tests cannot hide hallucinations or provider failures.”
+
+### Questions worth being ready to answer
+
+| Question | Concrete explanation |
+|---|---|
+| Why use a graph? | The workflow has explicit branches, persisted transitions, and an approval interrupt. Walk through `build_graph.py` and show how a paused thread resumes. |
+| How do you reduce hallucinations? | Retrieve before document analysis, pass actual tool evidence to synthesis, remove unsupported draft anchoring, and measure faithfulness. Acknowledge that relevant retrieval and a good prompt cannot guarantee correctness. |
+| How are users separated? | The server derives identity from authentication and combines it with the thread ID; checkpoint and retrieval namespaces follow that scope. The request's claimed user ID is not the authority. |
+| Why two model roles? | The smaller role handles routing/tool loops; the larger role handles synthesis/blog output. Explain the extra latency and measure it instead of assuming this is always faster or cheaper. |
+| Why buffer the answer if SSE is available? | Draft tokens can contain information that final redaction would remove. Node/tool progress stays live; answer delivery waits for sanitization. |
+| What did evaluation change? | It exposed missing golden-corpus facts, scoring against the wrong evidence, retrieval-order regressions, provider failures disguised as chat, and floating-point threshold errors. Each repair has regression coverage. |
+| What prevents a production-readiness claim? | Incomplete final RAG/application validation, research latency above target, small datasets, and remaining single-instance state/coordination. Describe these limits before discussing scaling. |
+
+For a demonstration, show a document question with citations, a review interrupt/resume, a persisted thread after restart, and an evaluation report containing both quality scores and operational failures.
+
+## Known limitations and next steps
+
+1. **Complete acceptance runs:** rerun the full RAG-QA and application datasets with sufficient fixed-model judge quota. Do not promote incomplete reports to the baseline.
+2. **Research latency:** the measured local request exceeded the 15-second target. Profile tool roundtrips, model calls, and memory writes before making further changes.
+3. **Retrieval coverage:** the regional-comparison probe still misses one expected passage despite passing aggregate retrieval gates. English suffix normalization and small synthetic corpora limit what the score establishes.
+4. **Broader safety evidence:** refusal/redaction patterns cover selected cases and can miss novel attacks or mask legitimate data. Extend adversarial and false-positive coverage.
+5. **Deployment scaling:** move remaining SQLite user/feedback state and process-local coordination to shared infrastructure before claiming multi-replica readiness.
+6. **Document support:** ingestion targets text-based PDFs; there is no OCR pipeline for scanned pages.
 
 ## License
 
-MIT — see [LICENSE](LICENSE) for details.
-
----
-
-<div align="center">
-
-Built by **Nithin** · Portfolio project demonstrating production agentic AI system design
-
-</div>
+[MIT](LICENSE).
